@@ -132,21 +132,32 @@ public class IndexStatsIT extends ESIntegTestCase {
     }
 
     public void testFieldDataStats() {
+        var node = internalCluster().getRandomDataNodeName();
+        logger.info("Preventing allocation on {}", node);
+        updateClusterSettings(Settings.builder().put("cluster.routing.allocation.exclude._name", node));
         assertAcked(
             indicesAdmin().prepareCreate("test")
                 .setSettings(
                     settingsBuilder().put("index.number_of_shards", 2)
+                        .put("index.number_of_replicas", "0")
                         .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
                 )
                 .setMapping("field", "type=text,fielddata=true", "field2", "type=text,fielddata=true")
         );
         ensureGreen();
+        logger.info("renable allocation");
+        updateClusterSettings(Settings.builder().putNull("cluster.routing.allocation.exclude._name"));
+        logger.info("renabled allocation");
 
+        logger.info("nodesInclude {}", internalCluster().nodesInclude("test"));
         // Ensure each node has at least one shard
         if (internalCluster().nodesInclude("test").size() == 1) {
+            logger.info("all on one");
             updateIndexSettings(Settings.builder().put("index.number_of_replicas", 1), "test");
             ensureGreen();
         }
+
+        logger.info("cluster state: {}", clusterService().state());
 
         prepareIndex("test").setId("1").setSource("field", "value1", "field2", "value1").get();
         prepareIndex("test").setId("2").setSource("field", "value2", "field2", "value2").get();
