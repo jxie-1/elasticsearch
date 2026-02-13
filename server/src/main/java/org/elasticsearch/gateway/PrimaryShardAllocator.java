@@ -83,6 +83,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             if (explain) {
                 nodeDecisions = buildDecisionsForAllNodes(unassignedShard, allocation);
             }
+            logger.info("From snapshot, FETCHING_SHARD_DATA");
             return AllocateUnassignedDecision.no(UnassignedInfo.AllocationStatus.FETCHING_SHARD_DATA, nodeDecisions);
         }
 
@@ -93,6 +94,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             if (explain) {
                 nodeDecisions = buildDecisionsForAllNodes(unassignedShard, allocation);
             }
+            logger.info("shardState.hasData() == false, FETCHING_SHARD_DATA");
             return AllocateUnassignedDecision.no(AllocationStatus.FETCHING_SHARD_DATA, nodeDecisions);
         }
 
@@ -220,6 +222,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             nodeResults = buildNodeDecisions(nodesToAllocate, shardState, inSyncAllocationIds);
         }
         if (allocation.hasPendingAsyncFetch()) {
+            logger.info("allocation.hasPendingAsyncFetch, FETCHING_SHARD_DATA");
             return AllocateUnassignedDecision.no(AllocationStatus.FETCHING_SHARD_DATA, nodeResults);
         } else if (node != null) {
             return AllocateUnassignedDecision.yes(node, allocationId, nodeResults, false);

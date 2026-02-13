@@ -140,7 +140,7 @@ public class IndexStatsIT extends ESIntegTestCase {
                 .setSettings(
                     settingsBuilder().put("index.number_of_shards", 2)
                         .put("index.number_of_replicas", "0")
-                        .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
+//                        .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
                 )
                 .setMapping("field", "type=text,fielddata=true", "field2", "type=text,fielddata=true")
         );
@@ -155,6 +155,7 @@ public class IndexStatsIT extends ESIntegTestCase {
             logger.info("all on one");
             updateIndexSettings(Settings.builder().put("index.number_of_replicas", 1), "test");
             ensureGreen();
+            updateIndexSettings(Settings.builder().put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none"));
         }
 
         logger.info("cluster state: {}", clusterService().state());

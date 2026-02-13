@@ -173,6 +173,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
             if (explain) {
                 nodeDecisions = buildDecisionsForAllNodes(unassignedShard, allocation);
             }
+            logger.info("shardStores.hasData() == false, FETCHING_SHARD_DATA");
             return AllocateUnassignedDecision.no(AllocationStatus.FETCHING_SHARD_DATA, nodeDecisions);
         }
 
