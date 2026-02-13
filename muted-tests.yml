@@ -410,6 +410,8 @@ tests:
 - class: org.elasticsearch.xpack.esql.parser.promql.PromqlParserTests
   method: testInstantVectorExpected
   issue: https://github.com/elastic/elasticsearch/issues/142420
+- class: org.elasticsearch.indices.stats.IndexStatsIT
+  method: testThrottleStats
 
 # Examples:
 #
