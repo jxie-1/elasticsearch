@@ -157,7 +157,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
         final boolean explain = allocation.debugDecision();
         // pre-check if it can be allocated to any node that currently exists, so we won't list the store for it for nothing
         PerNodeAllocationResult result = canBeAllocatedToAtLeastOneNode(unassignedShard, allocation);
-        logger.info("ReplicaShardAllocator.makeAllocationDecision: {}, {}, {}", unassignedShard, allocation, result);
+        logger.info("ReplicaShardAllocator.makeAllocationDecision: {}, {}", unassignedShard, result);
         Decision allocateDecision = result.decision();
         if (allocateDecision.type() != Decision.Type.YES && (explain == false || hasInitiatedFetching(unassignedShard) == false)) {
             // only return early if we are not in explain mode, or we are in explain mode but we have not
@@ -285,7 +285,8 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
      */
     public static PerNodeAllocationResult canBeAllocatedToAtLeastOneNode(ShardRouting shard, RoutingAllocation allocation) {
         Decision madeDecision = Decision.NO;
-        final boolean explain = allocation.debugDecision();
+//        final boolean explain = allocation.debugDecision();
+        final boolean explain = true;
         List<NodeAllocationResult> nodeDecisions = explain ? new ArrayList<>() : null;
         for (DiscoveryNode discoveryNode : allocation.nodes().getDataNodes().values()) {
             RoutingNode node = allocation.routingNodes().node(discoveryNode.getId());
