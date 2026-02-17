@@ -158,6 +158,16 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
         // pre-check if it can be allocated to any node that currently exists, so we won't list the store for it for nothing
         PerNodeAllocationResult result = canBeAllocatedToAtLeastOneNode(unassignedShard, allocation);
         logger.info("ReplicaShardAllocator.makeAllocationDecision: {}, {}", unassignedShard, result);
+        if (result.nodes != null) {
+            for (var node : result.nodes) {
+                logger.info(
+                    "Result for {}: {}, {}",
+                    node.getNode(),
+                    node.getNodeDecision(),
+                    node.getCanAllocateDecision().getExplanation()
+                );
+            }
+        }
         Decision allocateDecision = result.decision();
         if (allocateDecision.type() != Decision.Type.YES && (explain == false || hasInitiatedFetching(unassignedShard) == false)) {
             // only return early if we are not in explain mode, or we are in explain mode but we have not
