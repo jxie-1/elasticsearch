@@ -136,7 +136,6 @@ public class IndexStatsIT extends ESIntegTestCase {
             indicesAdmin().prepareCreate("test")
                 .setSettings(
                     settingsBuilder().put("index.number_of_shards", 2)
-                        .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
 //                        .put(EnableAllocationDecider.INDEX_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
                 )
                 .setMapping("field", "type=text,fielddata=true", "field2", "type=text,fielddata=true")
