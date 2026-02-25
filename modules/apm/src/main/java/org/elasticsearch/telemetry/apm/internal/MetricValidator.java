@@ -203,6 +203,7 @@ public class MetricValidator {
             Map.entry("es.repositories.exceptions.total", REPO_ATTRIBUTES),
             Map.entry("es.repositories.operations.total", REPO_ATTRIBUTES),
             Map.entry("es.repositories.operations.unsuccessful.total", REPO_ATTRIBUTES),
+            Map.entry("es.repositories.requests.copy_request_time.histogram", REPO_ATTRIBUTES),
             Map.entry("es.repositories.requests.http_request_time.histogram", REPO_ATTRIBUTES),
             Map.entry("es.repositories.requests.total", REPO_ATTRIBUTES),
             Map.entry("es.repositories.input_stream.retry.attempts.histogram", REPO_ATTRIBUTES),
