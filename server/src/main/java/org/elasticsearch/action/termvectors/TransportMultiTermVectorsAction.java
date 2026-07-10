@@ -31,6 +31,8 @@ import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.SliceIndexing;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.injection.guice.Inject;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.transport.TransportService;
 
@@ -39,6 +41,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class TransportMultiTermVectorsAction extends HandledTransportAction<MultiTermVectorsRequest, MultiTermVectorsResponse> {
+
+    // DEBUG-ONLY logger added to chase down testMultiTermVectorsApiRealtimeGet flakiness. Not for production.
+    private static final Logger logger = LogManager.getLogger(TransportMultiTermVectorsAction.class);
 
     private final ClusterService clusterService;
     private final NodeClient client;
@@ -83,13 +88,18 @@ public class TransportMultiTermVectorsAction extends HandledTransportAction<Mult
                 }
             }
             if (staleRequestExceptions.isEmpty() == false) {
+                logger.info("[DEBUG] mtv stale shards, retrying: {}", staleRequestExceptions);
                 // todo: this retries the entire request on any StaleRequestException. It might be worth saving the other items
                 // and only retrying the ones that failed with StaleRequestException, then merging the results.
                 reshardingActionHelper.waitForRoutingUpdate(
                     staleRequestExceptions,
-                    listener.delegateFailureAndWrap((l, unused) -> executeOnce(request, l))
+                    listener.delegateFailureAndWrap((l, unused) -> {
+                        logger.info("[DEBUG] mtv retrying executeOnce after routing update");
+                        executeOnce(request, l);
+                    })
                 );
             } else {
+                logger.info("[DEBUG] mtv no stale shards, responding");
                 listener.onResponse(response);
             }
         }));
@@ -120,6 +130,12 @@ public class TransportMultiTermVectorsAction extends HandledTransportAction<Mult
                 );
                 shardId = OperationRouting.shardId(project, concreteSingleIndex, termVectorsRequest.id(), termVectorsRequest.routing());
                 termVectorsRequest.setSplitShardCountSummary(project, concreteSingleIndex);
+                logger.info(
+                    "[DEBUG] mtv routing docId [{}] -> shardId [{}] summary [{}]",
+                    termVectorsRequest.id(),
+                    shardId,
+                    termVectorsRequest.getSplitShardCountSummary()
+                );
             } catch (RoutingMissingException e) {
                 responses.set(
                     i,

@@ -19,6 +19,8 @@ import org.elasticsearch.cluster.routing.SplitShardCountSummary;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.shard.ShardId;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,6 +28,9 @@ import java.util.List;
 import java.util.Map;
 
 public final class ShardBulkSplitHelper {
+
+    // DEBUG-ONLY logger added to chase down testMultiTermVectorsApiRealtimeGet flakiness. Not for production.
+    private static final Logger logger = LogManager.getLogger(ShardBulkSplitHelper.class);
 
     private ShardBulkSplitHelper() {}
 
@@ -54,6 +59,13 @@ public final class ShardBulkSplitHelper {
         for (BulkItemRequest bulkItemRequest : items) {
             DocWriteRequest<?> docWriteRequest = bulkItemRequest.request();
             int newShardId = docWriteRequest.rerouteAtSourceDuringResharding(indexRouting);
+            logger.info(
+                "[DEBUG] splitRequests sourceShardId [{}] docId [{}] -> newShardId [{}] shardCountSummary [{}]",
+                sourceShardId,
+                docWriteRequest.id(),
+                newShardId,
+                shardCountSummary
+            );
             List<BulkItemRequest> shardRequests = requestsByShard.computeIfAbsent(
                 new ShardId(index, newShardId),
                 shardNum -> new ArrayList<>()

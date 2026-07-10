@@ -115,7 +115,7 @@ public class TransportEnsureDocsSearchableAction extends TransportSingleShardAct
     ) throws IOException {
         assert DiscoveryNode.hasRole(clusterService.getSettings(), DiscoveryNodeRole.INDEX_ROLE)
             : EnsureDocsSearchableAction.TYPE.name() + " should only be executed on a stateless indexing node";
-        logger.debug("received request with {} docs", request.docIds().length);
+        logger.info("[DEBUG] received request with {} docs", request.docIds().length);
         getExecutor(shardId).execute(() -> ActionListener.run(listener, l -> {
             final IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());
             final IndexShard indexShard = indexService.getShard(shardId.id());
@@ -130,19 +130,28 @@ public class TransportEnsureDocsSearchableAction extends TransportSingleShardAct
                 // We prefer simplicity to complexity (trying to avoid the unnecessary stateless refresh) for the above limited cases.
                 boolean docInLiveVersionMap = indexShard.withEngine(engine -> engine.isDocumentInLiveVersionMap(docUid));
                 if (docInLiveVersionMap) {
-                    logger.debug("doc id [{}] (uid [{}]) found in live version map of index shard [{}]", docId, docUid, shardId);
+                    logger.info("[DEBUG] doc id [{}] (uid [{}]) found in live version map of index shard [{}]", docId, docUid, shardId);
                     docsFoundInLiveVersionMap = true;
                     break;
                 }
             }
 
             // Now that we performed realtime reads above we should check if they could be stale due to resharding.
-            if (IndexReshardService.isRealtimeReadPossiblyStale(indexShard, request.getSplitShardCountSummary())) {
+            boolean possiblyStale = IndexReshardService.isRealtimeReadPossiblyStale(indexShard, request.getSplitShardCountSummary());
+            logger.info(
+                "[DEBUG] mtv_eds shard [{}] docIds {} docsFoundInLiveVersionMap [{}] requestSummary [{}] possiblyStale [{}]",
+                shardId,
+                java.util.Arrays.toString(request.docIds()),
+                docsFoundInLiveVersionMap,
+                request.getSplitShardCountSummary(),
+                possiblyStale
+            );
+            if (possiblyStale) {
                 throw new StaleRequestException(indexShard.shardId(), request.getSplitShardCountSummary());
             }
 
             if (docsFoundInLiveVersionMap) {
-                logger.debug("refreshing index shard [{}] due to mtv_eds", shardId);
+                logger.info("[DEBUG] refreshing index shard [{}] due to mtv_eds", shardId);
                 BasicReplicationRequest refreshRequest = new BasicReplicationRequest(shardId);
                 refreshRequest.waitForActiveShards(ActiveShardCount.NONE);
                 // We call the transport action (instead of refreshing the index shard) to also update the unpromotable shards.
@@ -155,7 +164,7 @@ public class TransportEnsureDocsSearchableAction extends TransportSingleShardAct
                             : "expected a single shard failure, got " + r.getShardInfo().getFailed() + " failures";
                         throw new ElasticsearchException("failed to refresh [{}]", r.getShardInfo().getFailures()[0].getCause(), shardId);
                     }
-                    logger.debug("refreshed index shard [{}] due to mtv_eds", shardId);
+                    logger.info("[DEBUG] refreshed index shard [{}] due to mtv_eds", shardId);
                     ll.onResponse(ActionResponse.Empty.INSTANCE);
                 }));
             } else {
@@ -163,7 +172,7 @@ public class TransportEnsureDocsSearchableAction extends TransportSingleShardAct
                 // ongoing refresh and before the search shards being updated with the new commit, because the documents are
                 // guaranteed to be the in the live version map archive until search shards are updated with the new commit.
                 // Thus, we can safely respond immediately as a no-op.
-                logger.debug("eds does not require refresh of index shard [{}]", shardId);
+                logger.info("[DEBUG] eds does not require refresh of index shard [{}]", shardId);
                 l.onResponse(ActionResponse.Empty.INSTANCE);
             }
         }));

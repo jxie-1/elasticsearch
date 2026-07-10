@@ -166,6 +166,12 @@ public class ReplicationSplitHelper<
         public void coordinate() throws Exception {
             Map<ShardId, Request> splitRequests = action.splitRequestOnPrimary(originalRequest, project);
 
+            logger.info(
+                "[DEBUG] ReplicationSplitHelper.coordinate originalShardId [{}] splitRequests shards {}",
+                originalRequest.shardId(),
+                splitRequests.keySet()
+            );
+
             int numSplitRequests = splitRequests.size();
 
             // splitRequestOnPrimary must handle the case when the request has no items
@@ -271,6 +277,14 @@ public class ReplicationSplitHelper<
                     final DiscoveryNode targetNode = clusterState.nodes().get(target.currentNodeId());
                     final String allocationID = target.allocationId().getId();
                     final long expectedPrimaryTerm = indexMetadata.primaryTerm(targetShardId.id());
+
+                    logger.info(
+                        "[DEBUG] delegateToTarget targetShardId [{}] targetNode [{}] allocationID [{}] expectedPrimaryTerm [{}]",
+                        targetShardId,
+                        targetNode,
+                        allocationID,
+                        expectedPrimaryTerm
+                    );
 
                     TransportReplicationAction.ConcreteShardRequest<Request> concreteShardRequest =
                         new TransportReplicationAction.ConcreteShardRequest<>(splitRequest, allocationID, expectedPrimaryTerm);

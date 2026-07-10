@@ -52,9 +52,11 @@ public class ReshardingActionHelper {
     /// Waits for routing information to be updated in preparation to execute a multi-read operation.
     /// Provided [StaleRequestException]s are used to identify if routing information is recent enough.
     public void waitForRoutingUpdate(Map<ShardId, StaleRequestException> exceptions, ActionListener<Void> listener) {
+        logger.info("[DEBUG] waitForRoutingUpdate starting, exceptions [{}]", exceptions);
         ClusterStateObserver.waitForState(clusterService, threadPool.getThreadContext(), new ClusterStateObserver.Listener() {
             @Override
             public void onNewClusterState(ClusterState state) {
+                logger.info("[DEBUG] waitForRoutingUpdate resolved, new cluster state version [{}]", state.version());
                 listener.onResponse(null);
             }
 
@@ -65,6 +67,7 @@ public class ReshardingActionHelper {
 
             @Override
             public void onTimeout(TimeValue timeout) {
+                logger.info("[DEBUG] waitForRoutingUpdate TIMED OUT after [{}], exceptions [{}]", timeout, exceptions);
                 listener.onFailure(
                     new ElasticsearchTimeoutException("gave up waiting for routing to refresh", exceptions.values().iterator().next())
                 );
@@ -80,7 +83,15 @@ public class ReshardingActionHelper {
                 final var staleSummary = entry.getValue().getStaleSummary();
                 final var indexMetadata = project.index(shardId.getIndex());
                 final var currentSummary = SplitShardCountSummary.forSearch(indexMetadata, shardId.getId());
-                if (currentSummary.equals(staleSummary) == false) {
+                boolean isNewer = currentSummary.equals(staleSummary) == false;
+                logger.info(
+                    "[DEBUG] waitForRoutingUpdate predicate shardId [{}] staleSummary [{}] currentSummary [{}] isNewer [{}]",
+                    shardId,
+                    staleSummary,
+                    currentSummary,
+                    isNewer
+                );
+                if (isNewer) {
                     newerSummaries++;
                 }
             }

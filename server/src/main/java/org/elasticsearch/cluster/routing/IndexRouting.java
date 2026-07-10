@@ -33,6 +33,8 @@ import org.elasticsearch.index.IndexVersions;
 import org.elasticsearch.index.mapper.TimeSeriesRoutingHashFieldMapper;
 import org.elasticsearch.index.mapper.TsidExtractingIdFieldMapper;
 import org.elasticsearch.index.mapper.Uid;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.transport.Transports;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
@@ -53,6 +55,9 @@ import static org.elasticsearch.common.xcontent.XContentParserUtils.ensureExpect
  * Generates the shard id for {@code (id, routing)} pairs.
  */
 public abstract class IndexRouting {
+
+    // DEBUG-ONLY logger added to chase down testMultiTermVectorsApiRealtimeGet flakiness. Not for production.
+    private static final Logger logger = LogManager.getLogger(IndexRouting.class);
 
     static final NodeFeature LOGSB_ROUTE_ON_SORT_FIELDS = new NodeFeature("routing.logsb_route_on_sort_fields");
 
@@ -207,11 +212,19 @@ public abstract class IndexRouting {
      * @return Updated shardId
      */
     protected final int rerouteWritesIfResharding(int shardId) {
-        return rerouteFromSplitTargetShard(shardId, IndexReshardingState.Split.TargetShardState.HANDOFF);
+        int result = rerouteFromSplitTargetShard(shardId, IndexReshardingState.Split.TargetShardState.HANDOFF);
+        if (reshardingMetadata != null) {
+            logger.info("[DEBUG] rerouteWritesIfResharding shardId [{}] -> [{}] reshardingMetadata [{}]", shardId, result, reshardingMetadata);
+        }
+        return result;
     }
 
     protected final int rerouteSearchIfResharding(int shardId) {
-        return rerouteFromSplitTargetShard(shardId, IndexReshardingState.Split.TargetShardState.SPLIT);
+        int result = rerouteFromSplitTargetShard(shardId, IndexReshardingState.Split.TargetShardState.SPLIT);
+        if (reshardingMetadata != null) {
+            logger.info("[DEBUG] rerouteSearchIfResharding shardId [{}] -> [{}] reshardingMetadata [{}]", shardId, result, reshardingMetadata);
+        }
+        return result;
     }
 
     private int rerouteFromSplitTargetShard(int shardId, IndexReshardingState.Split.TargetShardState minimumRequiredState) {

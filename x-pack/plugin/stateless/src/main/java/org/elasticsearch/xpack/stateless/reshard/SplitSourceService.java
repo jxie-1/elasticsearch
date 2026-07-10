@@ -343,11 +343,11 @@ public class SplitSourceService {
             throw new AlreadyClosedException("Split source shard " + sourceShard.shardId() + " is closed");
         }
 
-        logger.debug("preparing for handoff to {}", targetShardId);
+        logger.info("[DEBUG] preparing for handoff to {}", targetShardId);
         SubscribableListener<Releasable> withPermits = SubscribableListener.<Void>newForked(
             afterMutable -> sourceShard.ensureMutable(afterMutable, false, EsExecutors.DIRECT_EXECUTOR_SERVICE)
         ).<Engine.FlushResult>andThen(afterFirstFlush -> sourceShard.withEngine(engine -> {
-            logger.debug("handoff: flushing {} for {} before acquiring permits", sourceShard.shardId(), targetShardId);
+            logger.info("[DEBUG] handoff: flushing {} for {} before acquiring permits", sourceShard.shardId(), targetShardId);
             // Similar to relocation, flush before blocking operations because we expect this to reduce the amount of work done by the
             // flush that happens while operations are blocked. NB the flush has force=false so may do nothing.
             engine.flush(/* force */ false, /* waitIfOngoing */ false, afterFirstFlush);
@@ -358,12 +358,12 @@ public class SplitSourceService {
                 // withEngine and flush can throw, and we don't want to leak permits if it does
                 try {
                     sourceShard.withEngine(engine -> {
-                        logger.debug("handoff: flushing {} for {} after acquiring permits", sourceShard.shardId(), targetShardId);
+                        logger.info("[DEBUG] handoff: flushing {} for {} after acquiring permits", sourceShard.shardId(), targetShardId);
                         // Don't stop copying commits until anything outstanding has been flushed.
                         engine.flush(/* force */ false, /* waitIfOngoing */ true, ActionListener.wrap(fr -> {
                             // No commits need to be copied after the flush, but it is possible that some might be if the engine generates
                             // commits spontaneously even though indexing permits are held. These are harmless to copy.
-                            logger.debug("handoff: stopping commit copy from {} to {}", sourceShard.shardId(), targetShardId);
+                            logger.info("[DEBUG] handoff: stopping commit copy from {} to {}", sourceShard.shardId(), targetShardId);
                             stopCopyingNewCommits(targetShardId);
                             activeTargetRequests.remove(sourceShard);
                             afterSecondFlush.onResponse(permits);
@@ -483,7 +483,7 @@ public class SplitSourceService {
 
                         switch (decision.outcome) {
                             case HANDOFF_SUCCESS -> {
-                                logger.debug("Target observed in HANDOFF state by source shard {}", sourceShardId);
+                                logger.info("[DEBUG] Target observed in HANDOFF state by source shard {}", sourceShardId);
                                 listener.onResponse(null);
                             }
                             case SOURCE_PRIMARY_ADVANCED -> {
