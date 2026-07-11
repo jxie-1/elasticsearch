@@ -12,7 +12,10 @@ import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.index.engine.LiveVersionMap;
 import org.elasticsearch.index.engine.LiveVersionMapArchive;
 import org.elasticsearch.index.engine.VersionValue;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -21,6 +24,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
+    // DEBUG-ONLY logger added to chase down testMultiTermVectorsApiRealtimeGet flakiness. Not for production.
+    private static final Logger logger = LogManager.getLogger(StatelessLiveVersionMapArchive.class);
+
     // Used to keep track of VersionValues while a refresh on unpromotable shards is pending.
     // Keeps track of the evacuated old map entries and the generation at the time of the refresh
     // to decide which evacuated maps can be removed upon a flush.
@@ -76,6 +82,7 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
             minDeleteTimestamp.accumulateAndGet(old.minDeleteTimestamp(), Math::min);
             // we record the generation that these new entries would go into once a flush happens.
             long generation = preCommitGenerationSupplier.get() + 1;
+            logger.info("[DEBUG] archive afterRefresh archiving generation [{}] isUnsafe [{}]", generation, old.isUnsafe());
             existing = archivePerGeneration.get(generation);
             if (existing == null) {
                 archivePerGeneration.put(generation, old);
@@ -91,7 +98,15 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
                 isUnsafe = false;
             }
             // go through the map and remove all entries with key <= generation
+            var generationsBefore = new ArrayList<>(archivePerGeneration.keySet());
             archivePerGeneration.entrySet().removeIf(entry -> entry.getKey() <= generation);
+            var generationsAfter = new ArrayList<>(archivePerGeneration.keySet());
+            logger.info(
+                "[DEBUG] archive afterUnpromotablesRefreshed generation [{}] generationsBefore {} generationsAfter {}",
+                generation,
+                generationsBefore,
+                generationsAfter
+            );
             // update min delete timestamp
             var newMin = archivePerGeneration.values()
                 .stream()
@@ -110,9 +125,10 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
     public VersionValue get(BytesRef uid) {
         synchronized (mutex) {
             // the map is sorted by descending generations
-            for (var versionLookup : archivePerGeneration.values()) {
-                VersionValue v = versionLookup.get(uid);
+            for (var entry : archivePerGeneration.entrySet()) {
+                VersionValue v = entry.getValue().get(uid);
                 if (v != null) {
+                    logger.info("[DEBUG] archive HIT uid [{}] generation [{}]", uid, entry.getKey());
                     return v;
                 }
             }

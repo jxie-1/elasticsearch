@@ -1339,6 +1339,13 @@ public class InternalEngine extends Engine {
                         index.uid(),
                         new IndexVersionValue(translogLocation, plan.versionForIndexing, index.seqNo(), index.primaryTerm())
                     );
+                    logger.info(
+                        "[DEBUG] added to live version map shard [{}] uid [{}] seqNo [{}] primaryTerm [{}]",
+                        shardId,
+                        index.uid(),
+                        index.seqNo(),
+                        index.primaryTerm()
+                    );
                 }
                 localCheckpointTracker.markSeqNoAsProcessed(indexResult.getSeqNo());
                 if (indexResult.getTranslogLocation() == null) {
@@ -1639,6 +1646,13 @@ public class InternalEngine extends Engine {
                     versionMap.maybePutIndexUnderLock(
                         index.uid(),
                         new IndexVersionValue(null, plan.versionForIndexing, index.seqNo(), index.primaryTerm())
+                    );
+                    logger.info(
+                        "[DEBUG] added to live version map (batch) shard [{}] uid [{}] seqNo [{}] primaryTerm [{}]",
+                        shardId,
+                        index.uid(),
+                        index.seqNo(),
+                        index.primaryTerm()
                     );
                 }
                 // TODO: Batch Optimize the processed seqNo

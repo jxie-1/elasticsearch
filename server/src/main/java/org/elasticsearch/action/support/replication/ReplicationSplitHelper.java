@@ -279,7 +279,9 @@ public class ReplicationSplitHelper<
                     final long expectedPrimaryTerm = indexMetadata.primaryTerm(targetShardId.id());
 
                     logger.info(
-                        "[DEBUG] delegateToTarget targetShardId [{}] targetNode [{}] allocationID [{}] expectedPrimaryTerm [{}]",
+                        "[DEBUG] delegateToTarget requestType [{}] targetShardId [{}] targetNode [{}] allocationID [{}]"
+                            + " expectedPrimaryTerm [{}]",
+                        splitRequest.getClass().getSimpleName(),
                         targetShardId,
                         targetNode,
                         allocationID,
@@ -288,7 +290,28 @@ public class ReplicationSplitHelper<
 
                     TransportReplicationAction.ConcreteShardRequest<Request> concreteShardRequest =
                         new TransportReplicationAction.ConcreteShardRequest<>(splitRequest, allocationID, expectedPrimaryTerm);
-                    primaryRequestSender.apply(targetNode, concreteShardRequest, listener);
+                    primaryRequestSender.apply(targetNode, concreteShardRequest, new ActionListener<>() {
+                        @Override
+                        public void onResponse(Response response) {
+                            logger.info(
+                                "[DEBUG] delegateToTarget SUCCEEDED requestType [{}] targetShardId [{}]",
+                                splitRequest.getClass().getSimpleName(),
+                                targetShardId
+                            );
+                            listener.onResponse(response);
+                        }
+
+                        @Override
+                        public void onFailure(Exception e) {
+                            logger.info(
+                                "[DEBUG] delegateToTarget FAILED requestType [{}] targetShardId [{}] exception [{}]",
+                                splitRequest.getClass().getSimpleName(),
+                                targetShardId,
+                                e.toString()
+                            );
+                            listener.onFailure(e);
+                        }
+                    });
                 }
 
                 @Override
