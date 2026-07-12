@@ -59,6 +59,9 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
         BASE_BYTES_PER_MAP_ENTRY = mapEntryShallowSize + 2 * RamUsageEstimator.NUM_BYTES_OBJECT_REF;
     }
 
+    // DEBUG-ONLY identity tag to disambiguate per-shard log lines. Not for production.
+    private final int debugId = System.identityHashCode(this);
+
     StatelessLiveVersionMapArchive(Supplier<Long> preCommitGenerationSupplier) {
         this.preCommitGenerationSupplier = preCommitGenerationSupplier;
     }
@@ -82,7 +85,12 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
             minDeleteTimestamp.accumulateAndGet(old.minDeleteTimestamp(), Math::min);
             // we record the generation that these new entries would go into once a flush happens.
             long generation = preCommitGenerationSupplier.get() + 1;
-            logger.info("[DEBUG] archive afterRefresh archiving generation [{}] isUnsafe [{}]", generation, old.isUnsafe());
+            logger.info(
+                "[DEBUG] archive afterRefresh archiveId [{}] archiving generation [{}] isUnsafe [{}]",
+                debugId,
+                generation,
+                old.isUnsafe()
+            );
             existing = archivePerGeneration.get(generation);
             if (existing == null) {
                 archivePerGeneration.put(generation, old);
@@ -102,7 +110,8 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
             archivePerGeneration.entrySet().removeIf(entry -> entry.getKey() <= generation);
             var generationsAfter = new ArrayList<>(archivePerGeneration.keySet());
             logger.info(
-                "[DEBUG] archive afterUnpromotablesRefreshed generation [{}] generationsBefore {} generationsAfter {}",
+                "[DEBUG] archive afterUnpromotablesRefreshed archiveId [{}] generation [{}] generationsBefore {} generationsAfter {}",
+                debugId,
                 generation,
                 generationsBefore,
                 generationsAfter
@@ -128,7 +137,7 @@ public class StatelessLiveVersionMapArchive implements LiveVersionMapArchive {
             for (var entry : archivePerGeneration.entrySet()) {
                 VersionValue v = entry.getValue().get(uid);
                 if (v != null) {
-                    logger.info("[DEBUG] archive HIT uid [{}] generation [{}]", uid, entry.getKey());
+                    logger.info("[DEBUG] archive HIT archiveId [{}] uid [{}] generation [{}]", debugId, uid, entry.getKey());
                     return v;
                 }
             }

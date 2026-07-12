@@ -801,7 +801,14 @@ public class IndexEngine extends InternalEngine {
     }
 
     public void commitSuccess(long generation) {
-        ((StatelessLiveVersionMapArchive) getLiveVersionMapArchive()).afterUnpromotablesRefreshed(generation);
+        LiveVersionMapArchive archive = getLiveVersionMapArchive();
+        logger.info(
+            "[DEBUG] commitSuccess shard [{}] generation [{}] archiveId [{}]",
+            shardId,
+            generation,
+            System.identityHashCode(archive)
+        );
+        ((StatelessLiveVersionMapArchive) archive).afterUnpromotablesRefreshed(generation);
     }
 
     @Override
