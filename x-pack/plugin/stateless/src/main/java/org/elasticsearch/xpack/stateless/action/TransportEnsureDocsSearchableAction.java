@@ -128,7 +128,18 @@ public class TransportEnsureDocsSearchableAction extends TransportSingleShardAct
                 // 2. The document may be in the live version map archive, even though it has been refreshed to the search shards. The
                 // document will be removed from the archive in a subsequent stateless refresh.
                 // We prefer simplicity to complexity (trying to avoid the unnecessary stateless refresh) for the above limited cases.
-                boolean docInLiveVersionMap = indexShard.withEngine(engine -> engine.isDocumentInLiveVersionMap(docUid));
+                boolean docInLiveVersionMap = indexShard.withEngine(engine -> {
+                    boolean found = engine.isDocumentInLiveVersionMap(docUid);
+                    logger.info(
+                        "[DEBUG] LVM check shard [{}] engineId [{}] docId [{}] uid [{}] found [{}]",
+                        shardId,
+                        System.identityHashCode(engine),
+                        docId,
+                        docUid,
+                        found
+                    );
+                    return found;
+                });
                 if (docInLiveVersionMap) {
                     logger.info("[DEBUG] doc id [{}] (uid [{}]) found in live version map of index shard [{}]", docId, docUid, shardId);
                     docsFoundInLiveVersionMap = true;

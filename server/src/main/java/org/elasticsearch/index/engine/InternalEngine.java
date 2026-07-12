@@ -1340,8 +1340,11 @@ public class InternalEngine extends Engine {
                         new IndexVersionValue(translogLocation, plan.versionForIndexing, index.seqNo(), index.primaryTerm())
                     );
                     logger.info(
-                        "[DEBUG] added to live version map shard [{}] uid [{}] seqNo [{}] primaryTerm [{}]",
+                        "[DEBUG] added to live version map shard [{}] engineId [{}] versionMapId [{}] uid [{}] seqNo [{}]"
+                            + " primaryTerm [{}]",
                         shardId,
+                        System.identityHashCode(this),
+                        System.identityHashCode(versionMap),
                         index.uid(),
                         index.seqNo(),
                         index.primaryTerm()
@@ -1648,8 +1651,11 @@ public class InternalEngine extends Engine {
                         new IndexVersionValue(null, plan.versionForIndexing, index.seqNo(), index.primaryTerm())
                     );
                     logger.info(
-                        "[DEBUG] added to live version map (batch) shard [{}] uid [{}] seqNo [{}] primaryTerm [{}]",
+                        "[DEBUG] added to live version map (batch) shard [{}] engineId [{}] versionMapId [{}] uid [{}] seqNo [{}]"
+                            + " primaryTerm [{}]",
                         shardId,
+                        System.identityHashCode(this),
+                        System.identityHashCode(versionMap),
                         index.uid(),
                         index.seqNo(),
                         index.primaryTerm()
