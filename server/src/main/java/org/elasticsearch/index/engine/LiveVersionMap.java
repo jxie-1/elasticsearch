@@ -16,6 +16,8 @@ import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.KeyedLock;
 import org.elasticsearch.core.Releasable;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -24,6 +26,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Maps _uid value to its version information. */
 public final class LiveVersionMap implements ReferenceManager.RefreshListener, Accountable {
+    // DEBUG-ONLY logger added to chase down testMultiTermVectorsApiRealtimeGet flakiness. Not for production.
+    private static final Logger logger = LogManager.getLogger(LiveVersionMap.class);
 
     private final KeyedLock<BytesRef> keyedLock = new KeyedLock<>();
 
@@ -183,11 +187,22 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
          * Builds a new map for the refresh transition this should be called in beforeRefresh()
          */
         Maps buildTransitionMap() {
-            return new Maps(
+            boolean inherited = shouldInheritSafeAccess();
+            Maps transitioned = new Maps(
                 new VersionLookup(ConcurrentCollections.newConcurrentMapWithAggressiveConcurrency(current.size())),
                 current,
-                shouldInheritSafeAccess()
+                inherited
             );
+            logger.info(
+                "[DEBUG] buildTransitionMap oldMapsId [{}] oldNeedsSafeAccess [{}] oldPreviousMapsNeededSafeAccess [{}]"
+                    + " newMapsId [{}] newPreviousMapsNeededSafeAccess [{}]",
+                System.identityHashCode(this),
+                needsSafeAccess,
+                previousMapsNeededSafeAccess,
+                System.identityHashCode(transitioned),
+                inherited
+            );
+            return transitioned;
         }
 
         /**
@@ -345,7 +360,14 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
     }
 
     void enforceSafeAccess() {
-        maps.needsSafeAccess = true;
+        Maps mapsAtCall = maps;
+        mapsAtCall.needsSafeAccess = true;
+        logger.info(
+            "[DEBUG] enforceSafeAccess mapsId [{}] needsSafeAccess [{}] thread [{}]",
+            System.identityHashCode(mapsAtCall),
+            mapsAtCall.needsSafeAccess,
+            Thread.currentThread().getName()
+        );
     }
 
     boolean isSafeAccessRequired() {
@@ -358,7 +380,18 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
     void maybePutIndexUnderLock(BytesRef uid, IndexVersionValue version) {
         assert assertKeyedLockHeldByCurrentThread(uid);
         Maps maps = this.maps;
-        if (maps.isSafeAccessMode()) {
+        boolean safeAccessMode = maps.isSafeAccessMode();
+        logger.info(
+            "[DEBUG] maybePutIndexUnderLock uid [{}] mapsId [{}] needsSafeAccess [{}] previousMapsNeededSafeAccess [{}]"
+                + " safeAccessMode [{}] thread [{}]",
+            uid,
+            System.identityHashCode(maps),
+            maps.needsSafeAccess,
+            maps.previousMapsNeededSafeAccess,
+            safeAccessMode,
+            Thread.currentThread().getName()
+        );
+        if (safeAccessMode) {
             putIndexUnderLock(uid, version);
         } else {
             // Even though we don't store a record of the indexing operation (and mark as unsafe),
