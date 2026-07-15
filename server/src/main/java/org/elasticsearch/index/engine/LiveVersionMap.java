@@ -251,6 +251,15 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
     // this map is only maintained if assertions are enabled
     private volatile Maps unsafeKeysMap = new Maps();
 
+    // Persists the "safe access required" signal across Maps transitions. A concurrent beforeRefresh()
+    // can swap this.maps between the enforceSafeAccess() write and the maybePutIndexUnderLock() read,
+    // and the new Maps may not inherit needsSafeAccess if the refresh thread read the old Maps before
+    // the write thread set it (TOCTOU race). This volatile flag closes that gap: once set it ensures
+    // maybePutIndexUnderLock always uses the safe (LVM-tracking) path regardless of which Maps object
+    // is current. The flag is intentionally never reset within the LVM's lifetime; correctness takes
+    // priority over the auto-generated-ID optimization, which can be addressed in a follow-up.
+    private volatile boolean safeAccessEnforced = false;
+
     /**
      * Bytes consumed for each BytesRef UID:
      * In this base value, we account for the {@link BytesRef} object itself as
@@ -360,6 +369,7 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
     }
 
     void enforceSafeAccess() {
+        safeAccessEnforced = true;
         Maps mapsAtCall = maps;
         mapsAtCall.needsSafeAccess = true;
         logger.info(
@@ -380,7 +390,7 @@ public final class LiveVersionMap implements ReferenceManager.RefreshListener, A
     void maybePutIndexUnderLock(BytesRef uid, IndexVersionValue version) {
         assert assertKeyedLockHeldByCurrentThread(uid);
         Maps maps = this.maps;
-        boolean safeAccessMode = maps.isSafeAccessMode();
+        boolean safeAccessMode = maps.isSafeAccessMode() || safeAccessEnforced;
         logger.info(
             "[DEBUG] maybePutIndexUnderLock uid [{}] mapsId [{}] needsSafeAccess [{}] previousMapsNeededSafeAccess [{}]"
                 + " safeAccessMode [{}] thread [{}]",
