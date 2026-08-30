@@ -261,6 +261,16 @@ public class SearchDirectory extends BlobStoreCacheDirectory {
 
         final Map<String, BlobFileRanges> commitFileRanges = createIncomingFileRangesForCommit(newCommit, commitFilesRangesOverride);
 
+        logger.warn(
+            "SearchDirectory.updateCommit: shard={}, gen={}, .si files: {}",
+            shardId,
+            newCommit.generation(),
+            commitFileRanges.entrySet()
+                .stream()
+                .filter(e -> e.getKey().endsWith(".si"))
+                .map(e -> e.getKey() + "->" + e.getValue().blobName() + "@" + e.getValue().fileOffset())
+                .collect(java.util.stream.Collectors.joining(", "))
+        );
         mergeMetadata(commitFileRanges, false);
         // TODO: Commits may not arrive in order. However, the maximum commit we have received is the commit of this directory since the
         // TODO: files always accumulate

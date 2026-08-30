@@ -7,16 +7,30 @@
 
 package org.elasticsearch.xpack.stateless.commits;
 
+import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.CodecUtil;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.CorruptIndexException;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.ResourceNotFoundException;
+import org.elasticsearch.common.blobstore.OperationPurpose;
+import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.FilterStreamInput;
 import org.elasticsearch.common.lucene.store.BytesReferenceIndexInput;
 import org.elasticsearch.core.Streams;
+import org.elasticsearch.index.codec.TrackingPostingsInMemoryBytesCodec;
+import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.stateless.engine.PrimaryTermAndGeneration;
 import org.elasticsearch.xpack.stateless.lucene.StatelessCommitRef;
@@ -708,6 +722,187 @@ public class VirtualBatchedCompoundCommitTests extends ESTestCase {
         input.seek(position);
         input.readBytes(bytes, 0, length);
         return bytes;
+    }
+
+    /**
+     * Reproduces the bug where, during hollow-commit blob upload, a previously-deleted .si file
+     * (ref=0 after markAsUploaded + VBCC close) is incorrectly read from in-memory SegmentInfos
+     * instead of the blob store.
+     *
+     * <p>The bug path: hollow commits replicate non-generational .si files (parseGeneration == 0,
+     * e.g. {@code _0.si}) from {@code referencedFiles} as extra content appended to the blob.
+     * Each extra-content file is read via {@code InternalFileReader.getInputStream()} which opens
+     * with {@code PreferLocalHint}. When the file's local ref is 0 (deleted from disk after the
+     * earlier VBCC closed), the buggy {@code IndexDirectory.openInput} falls through to
+     * {@code openSegmentInfoInputFromMemory()} instead of reading from the blob store via
+     * {@code cacheDirectory.openInput()}.
+     *
+     * <p>A concurrent dynamic mapping update (exactly as in
+     * {@code testSuccessfulSnapshotWithConcurrentDynamicMappingUpdates}) causes the in-memory
+     * {@code SegmentInfos} to carry an extra attribute ({@code IN_MEMORY_POSTINGS_BYTES_KEY}) that
+     * was not present when the .si file was originally serialized and uploaded. Re-serializing the
+     * segment produces M bytes where the VBCC header declared N {@literal <} M bytes, corrupting
+     * the blob layout and causing {@code CorruptIndexException} on search nodes.
+     */
+    public void testHollowCommitExtraContentWithConcurrentDynamicMapping() throws Exception {
+        final long primaryTerm = 1;
+        final Map<String, BlobLocation> uploadedBlobLocations = new HashMap<>();
+        final Map<String, BytesReference> blobs = new HashMap<>();
+
+        try (var fakeNode = createFakeNode(primaryTerm)) {
+            // Generate two commits with plain Lucene codec (no IN_MEMORY_POSTINGS_BYTES_KEY).
+            // Commit 1 creates segment _0; after VBCC 1 closes, _0.si ref=0 (deleted from disk).
+            // Commit 2 creates segment _1; after VBCC 2 closes, _1.si ref=0 (deleted from disk).
+            var commits = fakeNode.generateIndexCommits(2);
+            var commit1 = commits.get(0);
+            var commit2 = commits.get(1);
+            uploadVbccAndUpdateCommit(fakeNode, primaryTerm, commit1, uploadedBlobLocations, blobs);
+            uploadVbccAndUpdateCommit(fakeNode, primaryTerm, commit2, uploadedBlobLocations, blobs);
+
+            // Commit 3 (adds segment _2) gives VBCC 3 a strictly higher generation than VBCC 2
+            // so that the files referenced from VBCC 1/2 satisfy the before() assertion.
+            var commit3 = fakeNode.generateIndexCommits(1).getFirst();
+
+            // Use TrackingPostingsInMemoryBytesCodec — the exact codec InternalEngine wraps when
+            // DiscoveryNode.isStateless() is true — to genuinely trigger a dynamic mapping update.
+            // Indexing documents with distinct field names (mirroring the failing integration test
+            // testSuccessfulSnapshotWithConcurrentDynamicMappingUpdates) causes
+            // TrackingLengthFieldsConsumer.write() to call putAttribute(IN_MEMORY_POSTINGS_BYTES_KEY)
+            // on each flushed segment. The resulting _0 in these SegmentInfos serializes to M bytes,
+            // whereas the originally uploaded _0.si (plain codec, no such attribute) is N {@literal <} M bytes.
+            SegmentInfos engineSegmentInfos;
+            try (var tempDir = new ByteBuffersDirectory()) {
+                var realCodec = new TrackingPostingsInMemoryBytesCodec(Codec.getDefault());
+                var iwc = new IndexWriterConfig(new KeywordAnalyzer()).setCodec(realCodec).setMergePolicy(NoMergePolicy.INSTANCE);
+                try (var iw = new IndexWriter(tempDir, iwc)) {
+                    for (int i = 0; i < 3; i++) {
+                        var doc = new Document();
+                        doc.add(new StringField("foo" + i, "bar", Field.Store.NO));
+                        iw.addDocument(doc);
+                        iw.flush();
+                    }
+                    iw.commit();
+                }
+                engineSegmentInfos = SegmentInfos.readLatestCommit(tempDir);
+            }
+            // Wire the supplier so openSegmentInfoInputFromMemory() re-serializes from the ES-codec
+            // SegmentInfos (M bytes) instead of reading the correct N-byte upload from blob store.
+            fakeNode.indexingDirectory.setLastCommittedSegmentInfosSupplier(() -> engineSegmentInfos);
+
+            // Hollow VBCC 3 uses commit3 with its real additionalFiles ({_2.si, _2.cfs, _2.cfe,
+            // segments_N3}). Non-generational files from earlier VBCCs (_0.si, _0.cfs, _0.cfe)
+            // go to referencedFiles; since the commit is hollow, the referenced .si files become
+            // extra content that is re-uploaded via InternalFileReader with PreferLocalHint.
+            // _0.si ref=0 (deleted after VBCC 1 closed) → buggy openInput falls through to
+            // openSegmentInfoInputFromMemory(), returning M bytes where the header declared N bytes.
+            var hollowCommit = new StatelessCommitRef(
+                fakeNode.shardId,
+                new Engine.IndexCommitRef(commit3, () -> {}),
+                commit3.getAdditionalFiles(),
+                primaryTerm,
+                StatelessCompoundCommit.HOLLOW_TRANSLOG_RECOVERY_START_FILE,
+                -1L
+            );
+
+            var vbcc3 = new VirtualBatchedCompoundCommit(
+                fakeNode.shardId,
+                "node-id",
+                primaryTerm,
+                hollowCommit.getGeneration(),
+                uploadedBlobLocations::get,
+                ESTestCase::randomNonNegativeLong,
+                fakeNode.sharedCacheService.getRegionSize(),
+                randomIntBetween(0, fakeNode.sharedCacheService.getRegionSize())
+            );
+            assertTrue(vbcc3.appendCommit(hollowCommit, false, null));
+            vbcc3.freeze();
+            try (var output = new BytesStreamOutput()) {
+                try (var stream = vbcc3.getFrozenInputStreamForUpload()) {
+                    Streams.copy(stream, output, false);
+                }
+                blobs.put(vbcc3.getBlobName(), output.bytes());
+            }
+            var batchedCommit3 = vbcc3.getFrozenBatchedCompoundCommit();
+            vbcc3.close();
+
+            // Guard: the hollow commit must have .si extra content — without it the test is a no-op.
+            assertTrue(
+                "Expected hollow commit to have .si extra content",
+                batchedCommit3.compoundCommits().stream().anyMatch(cc -> cc.hollow() && cc.extraContent().isEmpty() == false)
+            );
+
+            // With the bug: the blob contains M bytes for _0.si but the header declared N bytes.
+            // readFileFromBlob for _0.si returns N bytes at the declared offset; those N bytes are
+            // the first N of M, so the CRC32 footer (at M-8) is outside the window →
+            // checksumEntireFile() detects the mismatch and throws CorruptIndexException.
+            //
+            // With the fix: IndexDirectory uses cacheDirectory.openInput() when ref=0, returning
+            // the correct N-byte content that was originally uploaded.
+            for (var cc : batchedCommit3.compoundCommits()) {
+                for (var entry : cc.extraContent().entrySet()) {
+                    if (entry.getKey().endsWith(".si")) {
+                        byte[] siBytes = readFileFromBlob(blobs, entry.getValue());
+                        try (var input = new BytesReferenceIndexInput("verify:" + entry.getKey(), new BytesArray(siBytes))) {
+                            CodecUtil.checksumEntireFile(input);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates and freezes a VBCC for the given commit, uploads it to both the local blobs map
+     * and the actual blob store (so the blob cache can serve files once they are deleted locally),
+     * then calls {@code IndexDirectory.updateCommit()} to mark all files as uploaded and finally
+     * closes the VBCC (which drops LocalFileRef counts to zero, deleting local files from disk).
+     */
+    private void uploadVbccAndUpdateCommit(
+        FakeStatelessNode fakeNode,
+        long primaryTerm,
+        StatelessCommitRef commit,
+        Map<String, BlobLocation> uploadedBlobLocations,
+        Map<String, BytesReference> blobs
+    ) throws IOException {
+        var vbcc = new VirtualBatchedCompoundCommit(
+            fakeNode.shardId,
+            "node-id",
+            primaryTerm,
+            commit.getGeneration(),
+            uploadedBlobLocations::get,
+            ESTestCase::randomNonNegativeLong,
+            fakeNode.sharedCacheService.getRegionSize(),
+            randomIntBetween(0, fakeNode.sharedCacheService.getRegionSize())
+        );
+        assertTrue(vbcc.appendCommit(commit, false, null));
+        vbcc.freeze();
+
+        try (var output = new BytesStreamOutput()) {
+            try (var stream = vbcc.getFrozenInputStreamForUpload()) {
+                Streams.copy(stream, output, false);
+            }
+            blobs.put(vbcc.getBlobName(), output.bytes());
+        }
+        try (var stream = vbcc.getFrozenInputStreamForUpload()) {
+            fakeNode.getShardContainer().writeBlob(OperationPurpose.INDICES, vbcc.getBlobName(), stream, vbcc.getTotalSizeInBytes(), false);
+        }
+
+        var batchedCommit = vbcc.getFrozenBatchedCompoundCommit();
+        for (var cc : batchedCommit.compoundCommits()) {
+            uploadedBlobLocations.putAll(cc.commitFiles());
+        }
+        Map<String, BlobFileRanges> blobFileRanges = new HashMap<>();
+        for (var entry : uploadedBlobLocations.entrySet()) {
+            blobFileRanges.put(entry.getKey(), new BlobFileRanges(entry.getValue()));
+        }
+        fakeNode.indexingDirectory.updateCommit(
+            commit.getGeneration(),
+            blobs.get(vbcc.getBlobName()).length(),
+            uploadedBlobLocations.keySet(),
+            blobFileRanges
+        );
+
+        vbcc.close();
     }
 
     private FakeStatelessNode createFakeNode(long primaryTerm) throws IOException {

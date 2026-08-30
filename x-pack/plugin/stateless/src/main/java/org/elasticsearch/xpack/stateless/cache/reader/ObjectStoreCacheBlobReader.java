@@ -13,6 +13,8 @@ import org.elasticsearch.blobcache.BlobCacheUtils;
 import org.elasticsearch.blobcache.common.ByteRange;
 import org.elasticsearch.common.blobstore.BlobContainer;
 import org.elasticsearch.common.blobstore.OperationPurpose;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.repositories.blobstore.RequestedRangeNotSatisfiedException;
 
 import java.io.IOException;
@@ -23,6 +25,8 @@ import java.util.concurrent.Executor;
  * A {@link CacheBlobReader} that fetches region-aligned data from the object store.
  */
 public class ObjectStoreCacheBlobReader implements CacheBlobReader {
+
+    private static final Logger logger = LogManager.getLogger(ObjectStoreCacheBlobReader.class);
 
     private final BlobContainer blobContainer;
     private final String blobName;
@@ -43,9 +47,15 @@ public class ObjectStoreCacheBlobReader implements CacheBlobReader {
 
     protected InputStream getRangeInputStream(long position, int length) throws IOException {
         try {
-            return blobContainer.readBlob(OperationPurpose.INDICES, blobName, position, length);
+            InputStream in = blobContainer.readBlob(OperationPurpose.INDICES, blobName, position, length);
+            logger.warn("BLOB_READ_START: blob={}, position={}, length={}", blobName, position, length);
+            return in;
         } catch (RequestedRangeNotSatisfiedException e) {
+            logger.warn("BLOB_READ_RANGE_MISSING: blob={}, position={}, length={}", blobName, position, length);
             return InputStream.nullInputStream();
+        } catch (Exception e) {
+            logger.warn("BLOB_READ_FAILED: blob={}, position={}, length={}, exception={}", blobName, position, length, e.toString());
+            throw e;
         }
     }
 

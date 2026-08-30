@@ -276,6 +276,8 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
                 var fileLength = reference.getDirectory().fileLength(commitFile);
                 internalFiles.add(new InternalFile(commitFile, fileLength));
                 internalFilesSize += fileLength;
+                logger.warn("InternalFile collected: shard={}, cc=[term={}, gen={}], blobName={}, file={}, len={}",
+                    shardId, reference.getPrimaryTerm(), reference.getGeneration(), blobFile, commitFile, fileLength);
             } else {
                 var blobLocation = internalLocations.get(commitFile);
                 assert blobLocation != null || isGenerationalFile(commitFile) == false : commitFile;
@@ -299,8 +301,21 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
         if (reference.isHollow()) {
             for (var entry : referencedFiles.entrySet()) {
                 if (Objects.equals(IndexFileNames.getExtension(entry.getKey()), LuceneFilesExtensions.SI.getExtension())) {
-                    extraContentFiles.add(new InternalFile(entry.getKey(), entry.getValue().fileLength()));
-                    extraContentSize += entry.getValue().fileLength();
+                    long blobLength = entry.getValue().fileLength();
+                    long dirLength = reference.getDirectory().fileLength(entry.getKey());
+                    if (blobLength != dirLength) {
+                        logger.warn(
+                            "hollow commit extra content {}: BlobLocation.fileLength()={} but directory.fileLength()={} (MISMATCH - "
+                                + "blob will use stale declared length, InternalFileReader may produce more bytes than declared)",
+                            entry.getKey(),
+                            blobLength,
+                            dirLength
+                        );
+                    } else {
+                        logger.debug("hollow commit extra content {}: fileLength={} (blob matches directory)", entry.getKey(), blobLength);
+                    }
+                    extraContentFiles.add(new InternalFile(entry.getKey(), blobLength));
+                    extraContentSize += blobLength;
                 }
             }
         }
@@ -317,6 +332,17 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
         final int headerLength = Math.toIntExact(headerReader.headerSize());
 
         final long sizeInBytes = headerLength + replicatedContentHeader.dataSizeInBytes() + internalFilesSize + extraContentSize;
+        logger.warn(
+            "CC size: shard={}, cc={}, blobName={}, sizeInBytes={} (headerLength={}, replicatedContent={}, internalFilesSize={}, extraContentSize={})",
+            shardId,
+            ccTermAndGen,
+            blobFile,
+            sizeInBytes,
+            headerLength,
+            replicatedContentHeader.dataSizeInBytes(),
+            internalFilesSize,
+            extraContentSize
+        );
         if (logger.isDebugEnabled()) {
             var referencedBlobs = referencedFiles.values().stream().map(location -> location.blobFile().blobName()).distinct().count();
             logger.debug(
@@ -353,6 +379,14 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
 
         final long headerOffset = currentOffset.get();
         assert headerOffset == BlobCacheUtils.toPageAlignedSize(headerOffset) : "header offset is not page-aligned: " + headerOffset;
+        logger.warn(
+            "CC header placed: shard={}, cc={}, blobName={}, headerOffset={}, headerLength={}",
+            shardId,
+            ccTermAndGen,
+            blobFile,
+            headerOffset,
+            headerLength
+        );
         var previousHeaderOffset = internalDataReadersByOffset.put(headerOffset, headerReader);
         assert previousHeaderOffset == null;
 
@@ -369,9 +403,18 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
         // Map of all compound commit (CC) files with their internal or referenced blob location
         final var commitFiles = new HashMap<>(referencedFiles);
 
+        final var readerContext = shardId + "[cc=" + ccTermAndGen + ",bcc=" + blobFile + "]";
         for (var internalFile : internalFiles) {
             var fileLength = internalFile.length();
             var blobLocation = new BlobLocation(blobFile, fileOffset, fileLength);
+
+            logger.warn(
+                "BlobLocation assigned: {} {} -> blobOffset={}, len={}",
+                readerContext,
+                internalFile.name(),
+                fileOffset,
+                fileLength
+            );
 
             var previousFile = commitFiles.put(internalFile.name(), blobLocation);
             assert previousFile == null : internalFile.name();
@@ -381,7 +424,7 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
 
             var previousOffset = internalDataReadersByOffset.put(
                 fileOffset,
-                new InternalFileReader(internalFile.name(), reference.getDirectory())
+                new InternalFileReader(internalFile.name(), reference.getDirectory(), internalFile.length(), readerContext)
             );
             assert previousOffset == null : internalFile.name();
             fileOffset += fileLength;
@@ -401,7 +444,7 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
 
             var previousOffset = internalDataReadersByOffset.put(
                 fileOffset,
-                new InternalFileReader(extraFile.name(), reference.getDirectory())
+                new InternalFileReader(extraFile.name(), reference.getDirectory(), extraFile.length(), readerContext)
             );
             assert previousOffset == null : extraFile.name();
             fileOffset += fileLength;
@@ -663,6 +706,12 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
     public InputStream getFrozenInputStreamForUpload() {
         assert isFrozen() : "Cannot stream before freeze";
         assert assertInternalConsistency();
+        logger.warn(
+            "VBCC upload starting: shard={}, blobName={}, totalDeclaredBytes={}",
+            shardId,
+            blobFile,
+            getTotalSizeInBytes()
+        );
         return getInputStreamForUpload();
     }
 
@@ -863,6 +912,12 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
                     internalDataReadersByOffset.floorKey(offset + length),
                     true
                 );
+                logger.warn(
+                    "VBCC_READERS: offset={}, length={}, readers={}",
+                    offset,
+                    length,
+                    subMap.entrySet().stream().map(e -> e.getKey() + ":" + describeReader(e.getValue())).toList()
+                );
                 long remainingBytesToRead = length;
                 for (var entry : subMap.entrySet()) {
                     if (remainingBytesToRead <= 0) {
@@ -882,6 +937,38 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
         } else {
             throw buildResourceNotFoundException(shardId, primaryTermAndGeneration);
         }
+    }
+
+    private static String describeReader(InternalDataReader reader) {
+        if (reader instanceof InternalFileReader fr) {
+            return "FileReader[" + fr.filename() + ",len=" + fr.declaredLength() + "]";
+        }
+        if (reader instanceof InternalHeaderReader hr) {
+            return "HeaderReader[size=" + hr.headerSize() + "]";
+        }
+        if (reader instanceof InternalPaddingReader pr) {
+            return "PaddingReader[" + pr.padding() + "]";
+        }
+        return reader.getClass().getSimpleName();
+    }
+
+    /**
+     * Returns a diagnostic description of the {@link InternalDataReader} covering {@code offset}.
+     * Used only for WARN logging; not part of any stable API.
+     */
+    String describeReaderAtOffset(long offset) {
+        Long floorKey = internalDataReadersByOffset.floorKey(offset);
+        if (floorKey == null) {
+            return "no-reader@" + offset;
+        }
+        InternalDataReader reader = internalDataReadersByOffset.get(floorKey);
+        if (reader instanceof InternalFileReader fr) {
+            return "FileReader[" + fr.filename() + ",len=" + fr.declaredLength() + "]@" + floorKey;
+        }
+        if (reader instanceof InternalHeaderReader hr) {
+            return "HeaderReader[size=" + hr.headerSize() + "]@" + floorKey;
+        }
+        return reader.getClass().getSimpleName() + "@" + floorKey;
     }
 
     boolean assertSameNodeEphemeralId(String id) {
@@ -1096,6 +1183,14 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
         public InputStream getInputStream(long offset, long length) throws IOException {
             var out = new ByteArrayOutputStream(Math.toIntExact(Math.clamp(headerSize - offset, 0, length)));
             writeHeader(new SlicedOutputStream(out, offset, length));
+            if (offset == 0 && length == headerSize && out.size() != headerSize) {
+                logger.warn(
+                    "InternalHeaderReader SIZE MISMATCH: declared headerSize={} but wrote {} bytes (bcc={})",
+                    headerSize,
+                    out.size(),
+                    getBlobName()
+                );
+            }
             return new ByteArrayInputStream(out.toByteArray());
         }
 
@@ -1108,7 +1203,9 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
     /**
      * Internal data reader for an internal file
      */
-    private record InternalFileReader(String filename, Directory directory) implements InternalDataReader {
+    private record InternalFileReader(String filename, Directory directory, long declaredLength, String bccContext)
+        implements
+            InternalDataReader {
 
         /**
          * Acquires a local file reference (via {@link IndexDirectory#tryAcquireLocalFileRef}) if {@link #directory} is an
@@ -1136,6 +1233,22 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
             IndexInput input = directory.openInput(filename, ioContext);
             try {
                 input.seek(offset);
+                // Diagnostic: peek at first 4 bytes to confirm correct data is being served
+                int peekLen = (int) Math.min(4, fileBytesToRead);
+                byte[] peeked = new byte[peekLen];
+                for (int i = 0; i < peekLen; i++) {
+                    peeked[i] = input.readByte();
+                }
+                input.seek(offset);
+                logger.warn(
+                    "VBCC_FILE_PEEK: bcc={}, file={}, fileOffset={}, fileBytesToRead={}, first{}bytes={}",
+                    bccContext,
+                    filename,
+                    offset,
+                    fileBytesToRead,
+                    peekLen,
+                    Arrays.toString(peeked)
+                );
                 return new InputStreamIndexInput(input, fileBytesToRead) {
                     @Override
                     public void close() throws IOException {
@@ -1160,7 +1273,22 @@ public class VirtualBatchedCompoundCommit extends AbstractRefCounted implements 
                 ? IOContext.READONCE.withHints(ReadOnceHint.INSTANCE, IndexDirectory.PreferLocalHint.INSTANCE)
                 : IOContext.DEFAULT.withHints(IndexDirectory.PreferLocalHint.INSTANCE);
             Store.VerifyingIndexInput input = new Store.VerifyingIndexInput(directory.openInput(filename, ioContext));
-            logger.trace("opening validating input for {}", filename);
+            if (input.length() != declaredLength) {
+                logger.warn(
+                    "InternalFileReader {} {}: declared={} but input.length()={} (MISMATCH - blob layout will be corrupted)",
+                    bccContext,
+                    filename,
+                    declaredLength,
+                    input.length()
+                );
+            } else {
+                logger.warn(
+                    "InternalFileReader {} {}: input.length={} matches declared",
+                    bccContext,
+                    filename,
+                    input.length()
+                );
+            }
 
             return new InputStreamIndexInput(input, input.length()) {
                 @Override

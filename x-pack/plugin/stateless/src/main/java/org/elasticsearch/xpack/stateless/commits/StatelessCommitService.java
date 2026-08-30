@@ -1793,6 +1793,19 @@ public class StatelessCommitService extends AbstractLifecycleComponent implement
             } else {
                 // This length adjustment is needed because the last CC is not padded in a vBCC
                 long length = Math.min(request.getLength(), vbcc.getTotalSizeInBytes() - request.getOffset());
+                logger.warn(
+                    "VBCC_SERVE: shard={}, vbcc=[term={},gen={}], maxGen={}, totalSize={}, "
+                        + "requestOffset={}, requestLen={}, adjustedLen={}, reader={}",
+                    shardId,
+                    vbcc.getPrimaryTermAndGeneration().primaryTerm(),
+                    vbcc.getPrimaryTermAndGeneration().generation(),
+                    vbcc.getMaxGeneration(),
+                    vbcc.getTotalSizeInBytes(),
+                    request.getOffset(),
+                    request.getLength(),
+                    length,
+                    vbcc.describeReaderAtOffset(request.getOffset())
+                );
                 vbcc.getBytesByRange(request.getOffset(), length, output);
             }
         }

@@ -200,6 +200,14 @@ public class SequentialRangeMissingHandler implements SharedBlobCacheService.Ran
                 assert ThreadPool.assertCurrentThreadPool(expectedThreadPoolNames);
                 int bytesCopied = SharedBytes.copyToCacheFileAligned(channel, in, channelPos, progressUpdater, writeBufferSupplier.get());
                 bytesCopiedConsumer.accept(bytesCopied);
+                logger.warn(
+                    "FILL_CACHE_RANGE_COPIED: blob={}, channelPos={}, relativePos={}, len={}, bytesCopied={}",
+                    blobFileName,
+                    channelPos,
+                    relativePos,
+                    len,
+                    bytesCopied
+                );
                 return null;
             }
         }));

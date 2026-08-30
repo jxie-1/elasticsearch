@@ -541,6 +541,52 @@ public class IndexDirectoryTests extends ESTestCase {
         }
     }
 
+    /**
+     * Regression test for the stale-fileLength bug: when a file that was previously uploaded is re-written
+     * locally with a different size (e.g. because a segment counter reset caused a new flush of the same
+     * segment, and the new codec adds extra attributes that grow the .si file), fileLength() must return the
+     * actual local size, not the stale size recorded in cacheDirectory from the old upload. Using the stale
+     * size caused VirtualBatchedCompoundCommit to declare the wrong InternalFile length, making the
+     * InternalFileReader stream more bytes than declared, which shifted all subsequent readers in the blob
+     * and corrupted the layout — leading to CorruptIndexException on the search node.
+     */
+    public void testFileLengthReturnsPendingLocalVersionWhenCacheContainsStaleVersion() throws IOException {
+        final Path path = PathUtils.get(createTempDir().toString());
+        final IndexBlobStoreCacheDirectory cacheDirectory = new IndexBlobStoreCacheDirectory(mockedCacheService(), null);
+        cacheDirectory.setBlobContainer(ignore -> mock(BlobContainer.class));
+        try (IndexDirectory directory = new IndexDirectory(FSDirectory.open(path), cacheDirectory, null, true)) {
+            final String filename = "segment.si";
+            final int staleSize = between(1, 128);
+            final int actualSize = staleSize + between(1, 128);
+
+            // Upload the first version (stale size). After updateCommit the local file is deleted and
+            // cacheDirectory records the old size.
+            try (IndexOutput out = directory.createOutput(filename, IOContext.DEFAULT)) {
+                out.writeBytes(randomByteArrayOfLength(staleSize), staleSize);
+            }
+            directory.updateCommit(
+                1L,
+                staleSize,
+                Set.of(filename),
+                Map.of(filename, createBlobFileRanges(1L, filename.hashCode(), 0L, staleSize))
+            );
+            assertTrue(cacheDirectory.containsFile(filename));
+            assertThat(cacheDirectory.fileLength(filename), equalTo((long) staleSize));
+
+            // Simulate a segment counter reset: Lucene deletes the old segment before re-creating it.
+            // This clears the old LocalFileRef from localFiles so createOutput can accept the name again.
+            directory.deleteFile(filename);
+
+            // Write a new local version of the same file with a different size (not yet uploaded).
+            try (IndexOutput out = directory.createOutput(filename, IOContext.DEFAULT)) {
+                out.writeBytes(randomByteArrayOfLength(actualSize), actualSize);
+            }
+
+            // fileLength() must return the actual pending-local size, not the stale cache size.
+            assertThat(directory.fileLength(filename), equalTo((long) actualSize));
+        }
+    }
+
     private static TestThreadPool getThreadPool(String name) {
         return new TestThreadPool(name, StatelessPlugin.statelessExecutorBuilders(Settings.EMPTY, true));
     }

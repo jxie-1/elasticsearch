@@ -1542,6 +1542,16 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
                 assert blobCacheService.regionOwners.get(ioRef) == CacheFileRegion.this;
                 assert CacheFileRegion.this.hasReferences() : CacheFileRegion.this;
                 int start = Math.toIntExact(gap.start());
+                final long regionStart = blobCacheService.getRegionStart(regionKey.region);
+                logger.warn(
+                    "CACHE_FILL: key={}, region={}, gapInRegion=[{},{}], blobRange=[{},{}]",
+                    regionKey.file,
+                    regionKey.region,
+                    start,
+                    gap.end(),
+                    regionStart + start,
+                    regionStart + gap.end()
+                );
                 writer.fillCacheRange(
                     ioRef,
                     start,
@@ -1553,6 +1563,13 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
                         assert blobCacheService.regionOwners.get(ioRef) == CacheFileRegion.this;
                         assert CacheFileRegion.this.hasReferences() : CacheFileRegion.this;
                         blobCacheService.writeCount.increment();
+                        logger.warn(
+                            "CACHE_FILL_COMPLETE: key={}, region={}, gap=[{},{}]",
+                            regionKey.file,
+                            regionKey.region,
+                            start,
+                            gap.end()
+                        );
                         gap.onCompletion();
                         return null;
                     }).delegateResponse((delegate, e) -> failGapAndListener(gap, delegate, e))
@@ -1561,6 +1578,12 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
         }
 
         private static void failGapAndListener(SparseFileTracker.Gap gap, ActionListener<?> listener, Exception e) {
+            logger.warn(
+                "CACHE_FILL_FAILED: gap=[{},{}], exception={}",
+                gap.start(),
+                gap.end(),
+                e.toString()
+            );
             try {
                 gap.onFailure(e);
             } catch (Exception ex) {

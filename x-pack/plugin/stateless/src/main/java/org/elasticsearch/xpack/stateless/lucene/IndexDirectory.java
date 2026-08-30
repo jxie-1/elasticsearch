@@ -166,20 +166,34 @@ public class IndexDirectory extends ByteSizeDirectory {
 
     @Override
     public long fileLength(String name) throws IOException {
-        if (cacheDirectory.containsFile(name) == false) {
-            LocalFileRef localFile;
-            try (var ignored = readLock.acquire()) {
-                localFile = localFiles.get(name);
-            }
-            if (localFile != null && localFile.tryIncRefNotUploaded()) {
-                try {
-                    return super.fileLength(name);
-                } finally {
-                    localFile.decRef();
-                }
+        // Always check for a not-yet-uploaded local version first: a new file can share the same name as a
+        // previously-uploaded file (e.g. after a segment counter reset), making cacheDirectory.containsFile() return
+        // true for the old version while the local file is a larger new version. Returning the stale cache size in
+        // that case would cause VBCC to declare the wrong file length, corrupting the blob layout.
+        LocalFileRef localFile;
+        try (var ignored = readLock.acquire()) {
+            localFile = localFiles.get(name);
+        }
+        if (localFile != null && localFile.tryIncRefNotUploaded()) {
+            try {
+                long length = super.fileLength(name);
+                logger.debug("fileLength({}) -> {} bytes (local not-yet-uploaded)", name, length);
+                return length;
+            } finally {
+                localFile.decRef();
             }
         }
-        return cacheDirectory.fileLength(name);
+        long length = cacheDirectory.fileLength(name);
+        if (localFile != null) {
+            logger.warn(
+                "fileLength({}) -> {} bytes (cache; local ref existed but was already uploaded - returning stale cache size)",
+                name,
+                length
+            );
+        } else {
+            logger.debug("fileLength({}) -> {} bytes (cache, no local ref)", name, length);
+        }
+        return length;
     }
 
     @Override
@@ -258,14 +272,24 @@ public class IndexDirectory extends ByteSizeDirectory {
         // explicitly requests local disk via PreferLocalHint (e.g. VirtualBatchedCompoundCommit serving BCC
         // chunk requests during the search-tier notification window, where even uploaded files must be read
         // from local disk instead of the blob-store cache).
+        LocalFileRef preferLocalRef = null;
         if (preferLocal || cacheDirectory.containsFile(name) == false) {
             LocalFileRef localFile;
             try (var ignored = readLock.acquire()) {
                 localFile = localFiles.get(name);
             }
+            if (preferLocal) {
+                preferLocalRef = localFile;
+            }
             if (localFile != null && (preferLocal ? localFile.tryIncRef() : localFile.tryIncRefNotUploaded())) {
                 try {
                     if (preferLocal) {
+                        logger.warn(
+                            "openInput({}) preferLocal: LOCAL (uploaded={}, ref={})",
+                            name,
+                            localFile.isUploaded(),
+                            localFile
+                        );
                         return super.openInput(name, context);
                     }
                     // Index inputs opened with READONCE IO context are expected to be read and closed within the same thread
@@ -279,7 +303,7 @@ public class IndexDirectory extends ByteSizeDirectory {
             }
         }
 
-        if (readSiFromMemoryIfPossible && isSegmentInfoFile(name)) {
+        if (preferLocal == false && readSiFromMemoryIfPossible && isSegmentInfoFile(name)) {
             // If the requested input is for a SegmentInfo which is part of the last committed segment info files, we can read it directly
             // from memory and avoid a most costly access.
             Optional<IndexInput> inputFromMemory = openSegmentInfoInputFromMemory(name, context);
@@ -288,6 +312,13 @@ public class IndexDirectory extends ByteSizeDirectory {
             }
         }
 
+        if (preferLocal) {
+            logger.warn(
+                "openInput({}) preferLocal: CACHE fallback (localRef={})",
+                name,
+                preferLocalRef != null ? (preferLocalRef.isUploaded() ? "uploaded/deleted" : "exists-no-ref") : "null"
+            );
+        }
         return cacheDirectory.openInput(name, context);
     }
 
@@ -507,9 +538,30 @@ public class IndexDirectory extends ByteSizeDirectory {
             assert blobFileRanges.keySet().containsAll(uploadedFiles);
 
             cacheDirectory.updateMetadata(blobFileRanges, dataSizeInBytes);
+            logger.warn(
+                "updateCommit: shard={}, gen={}, .si files: {}",
+                cacheDirectory.getShardId(),
+                lastUploadedGeneration,
+                blobFileRanges.entrySet()
+                    .stream()
+                    .filter(e -> e.getKey().endsWith(".si"))
+                    .map(e -> e.getKey() + "->" + e.getValue().blobName() + "@" + e.getValue().fileOffset())
+                    .collect(java.util.stream.Collectors.joining(", "))
+            );
             uploadedFiles.forEach(file -> {
                 var localFile = localFiles.get(file);
                 if (localFile != null) {
+                    if (localFile.isUploaded() == false) {
+                        logger.debug("updateCommit(gen={}): marking {} as uploaded", lastUploadedGeneration, file);
+                    } else {
+                        logger.warn(
+                            "updateCommit(gen={}): {} is in uploadedFiles but localFiles entry is ALREADY uploaded (race condition: "
+                                + "a newer local version was created after this BCC was frozen but before updateCommit ran - "
+                                + "the new local file has been incorrectly marked as uploaded)",
+                            lastUploadedGeneration,
+                            file
+                        );
+                    }
                     localFile.markAsUploaded();
                 }
             });

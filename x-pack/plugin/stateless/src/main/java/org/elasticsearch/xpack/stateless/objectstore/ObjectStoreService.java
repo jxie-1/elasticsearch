@@ -1800,6 +1800,12 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
             } finally {
                 if (success) {
                     final long uploadIoMs = TimeValue.nsecToMSec(threadPool.relativeTimeInNanos() - uploadIoStartNanos);
+                    logger.warn(
+                        "VBCC upload COMPLETE: shard={}, blobName={}, totalBytes={}",
+                        virtualBatchedCompoundCommit.getShardId(),
+                        virtualBatchedCompoundCommit.getBlobName(),
+                        virtualBatchedCompoundCommit.getTotalSizeInBytes()
+                    );
                     listener.onResponse(new BccUploadObjectStoreTiming(objectStoreQueueWaitMs, uploadIoMs));
                 }
             }
