@@ -146,16 +146,27 @@ public class IndicesLifecycleListenerIT extends ESIntegTestCase {
         ensureGreen("index1");
 
         var maxAttempts = MaxRetryAllocationDecider.SETTING_ALLOCATION_MAX_RETRY.get(Settings.EMPTY);
+        // Read cluster state from the master only. prepareState() is local to the contacted node, and
+        // clusterAdmin() picks a random node — a lagging non-master can still show RELOCATING after
+        // retries are exhausted on the master (#160100).
 
         // await all relocation attempts are exhausted
         assertBusy(() -> {
-            var state = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
+            var state = client(internalCluster().getMasterName()).admin()
+                .cluster()
+                .prepareState(TEST_REQUEST_TIMEOUT)
+                .get()
+                .getState();
             var shard = state.routingTable().index("index1").shard(0).primaryShard();
             assertThat(shard, notNullValue());
             assertThat(shard.relocationFailureInfo().failedRelocations(), equalTo(maxAttempts));
         });
         // ensure the shard remain started
-        var state = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
+        var state = client(internalCluster().getMasterName()).admin()
+            .cluster()
+            .prepareState(TEST_REQUEST_TIMEOUT)
+            .get()
+            .getState();
         logger.info("Final routing is {}", state.getRoutingNodes().toString());
         var shard = state.routingTable().index("index1").shard(0).primaryShard();
         assertThat(shard, notNullValue());
