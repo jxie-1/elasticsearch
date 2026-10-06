@@ -418,6 +418,10 @@ public class TransportStatelessUnpromotableRelocationAction extends TransportAct
             for (PitReaderContext context : activeContexts) {
                 fetchOpenPitContextInfo(shardId, context, listeners.acquire(r -> r.ifPresent(info -> {
                     pitContextInfos.add(info);
+                    // Mark as relocating as soon as the context is included in the handoff, not only
+                    // when the source shard closes. Otherwise post-relocation searches can still use
+                    // the source copy (PIT id not rewritten) and closePit leaks the target. See #155740.
+                    context.relocate();
                     pitRelocationMetrics.recordSourceContextCreated();
                 })), warningCounter);
             }

@@ -111,6 +111,7 @@ import org.elasticsearch.search.fetch.subphase.FetchFieldsContext;
 import org.elasticsearch.search.fetch.subphase.FieldAndFormat;
 import org.elasticsearch.search.internal.AliasFilter;
 import org.elasticsearch.search.internal.ContextIndexSearcher;
+import org.elasticsearch.search.internal.PitReaderContext;
 import org.elasticsearch.search.internal.ReaderContext;
 import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.search.internal.ShardSearchContextId;
@@ -2347,6 +2348,29 @@ public class SearchServiceSingleNodeTests extends ESSingleNodeTestCase {
         future.actionGet();
         assertThat(searchService.getActiveContexts(), equalTo(1));
         assertTrue(searchService.freeReaderContext(future.actionGet()));
+    }
+
+    public void testFindReaderContextRejectsRelocatingPit() {
+        createIndex("index");
+        SearchService searchService = getInstanceFromNode(SearchService.class);
+        ShardId shardId = new ShardId(resolveIndex("index"), 0);
+        ShardSearchContextId contextId = openReaderContext(searchService, shardId);
+        try {
+            ReaderContext readerContext = searchService.createOrGetReaderContext(shardSearchRequest(shardId, contextId), null);
+            assertThat(readerContext, instanceOf(PitReaderContext.class));
+            ((PitReaderContext) readerContext).relocate();
+            assertTrue(readerContext.isRelocating());
+
+            expectThrows(
+                SearchContextMissingException.class,
+                () -> searchService.createOrGetReaderContext(shardSearchRequest(shardId, contextId), null)
+            );
+            // Relocating context must remain registered (for grace/reaper cleanup), not be recreated.
+            assertThat(searchService.getActiveContexts(), equalTo(1));
+            assertTrue(readerContext.isRelocating());
+        } finally {
+            assertTrue(searchService.freeReaderContext(contextId));
+        }
     }
 
     public void testFindReaderContextRejectsMismatchedShard() {

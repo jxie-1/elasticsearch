@@ -1595,7 +1595,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             throw new IllegalArgumentException("Session id must be specified");
         }
         final ReaderContext reader = activeReaders.get(id);
-        if (reader == null) {
+        // Relocating contexts must not serve new searches: PitReaderContext.relocate() marks them so
+        // clients fail over to the target and rewrite the PIT id. Without this check, post-relocation
+        // searches can still hit the source, leave the PIT id pointing at the old node, and leak the
+        // target copy after closePit. See #155740.
+        if (reader == null || reader.isRelocating()) {
             throw new SearchContextMissingException(id);
         }
         // The context-id must resolve to a reader for the expected shard.
@@ -1633,6 +1637,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 return findReaderContext(contextId, request, request.shardId());
             } catch (SearchContextMissingException e) {
                 logger.debug("failed to find active reader context [id: {}]", contextId);
+                // Context still present but relocating: do not recreate on the source node; fail over.
+                final ReaderContext existing = activeReaders.get(contextId);
+                if (existing != null && existing.isRelocating()) {
+                    throw e;
+                }
                 if (contextId.isRetryable() == false) {
                     throw e;
                 }
