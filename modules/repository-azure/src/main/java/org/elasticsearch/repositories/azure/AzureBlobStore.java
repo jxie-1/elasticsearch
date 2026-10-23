@@ -853,6 +853,10 @@ public class AzureBlobStore implements BlobStore {
             try (var client = getAzureBlobServiceClientClient(purpose)) {
                 final BlobServiceClient syncClient = client.getSyncClient();
                 final BlobClient blobSyncClient = syncClient.getBlobContainerClient(container).getBlobClient(blobName);
+                final long copyStartNanos = System.nanoTime();
+                String copyPath = "single-part";
+                long loggedPartSize = blobSize;
+                int loggedParts = 1;
                 try {
                     // Put Block From URL requires the source to be public or authorized by a SAS in the source URL,
                     // see https://learn.microsoft.com/en-us/rest/api/storageservices/put-block-from-url
@@ -866,6 +870,9 @@ public class AzureBlobStore implements BlobStore {
                         );
                         final BlockBlobClient blockBlobClient = blobSyncClient.getBlockBlobClient();
                         final int nbParts = ConcurrentMultipartHelper.numberOfParts(blobSize, partSize);
+                        copyPath = "multipart";
+                        loggedPartSize = partSize;
+                        loggedParts = nbParts;
                         final String[] blockIds = new String[nbParts];
                         for (int i = 0; i < nbParts; i++) {
                             blockIds[i] = makeMultipartBlockId();
@@ -876,10 +883,13 @@ public class AzureBlobStore implements BlobStore {
                             final long lastPartSize = blobSize - (long) (nbParts - 1) * partSize;
                             for (int partNum = 0; partNum < nbParts; partNum++) {
                                 final long curPartSize = partNum == nbParts - 1 ? lastPartSize : partSize;
-                                blockBlobClient.stageBlockFromUrl(
+                                stageBlockFromUrlTimed(
+                                    blockBlobClient,
                                     blockIds[partNum],
                                     finalSourceUrl,
-                                    new BlobRange((long) partNum * partSize, curPartSize)
+                                    partNum,
+                                    (long) partNum * partSize,
+                                    curPartSize
                                 );
                             }
                         } else {
@@ -887,10 +897,13 @@ public class AzureBlobStore implements BlobStore {
                                 blobSize,
                                 partSize,
                                 executor,
-                                (partNum, offset, curPartSize, lastPart) -> blockBlobClient.stageBlockFromUrl(
+                                (partNum, offset, curPartSize, lastPart) -> stageBlockFromUrlTimed(
+                                    blockBlobClient,
                                     blockIds[partNum],
                                     finalSourceUrl,
-                                    new BlobRange(offset, curPartSize)
+                                    partNum,
+                                    offset,
+                                    curPartSize
                                 )
                             );
                         }
@@ -909,7 +922,33 @@ public class AzureBlobStore implements BlobStore {
                             throw new IOException("Copy from " + sourceBlobName + " to " + blobName + " failed: " + response.getStatus());
                         }
                     }
+                    logger.info(
+                        "[copy-bench] copied [{}] to [{}] purpose [{}] size [{}] path [{}] parts [{}] partSize [{}] executor [{}] "
+                            + "sasToken [{}] credentials {} in [{}]ms",
+                        sourceBlobName,
+                        blobName,
+                        purpose,
+                        blobSize,
+                        copyPath,
+                        loggedParts,
+                        loggedPartSize,
+                        executor == null ? "none" : "present",
+                        Strings.hasText(sasToken),
+                        sourceStorageSettings.credentialsUsageFeatures(),
+                        TimeValue.nsecToMSec(System.nanoTime() - copyStartNanos)
+                    );
                 } catch (BlobStorageException e) {
+                    logger.warn(
+                        "[copy-bench] copy of [{}] to [{}] purpose [{}] size [{}] path [{}] failed with status [{}] code [{}] after [{}]ms",
+                        sourceBlobName,
+                        blobName,
+                        purpose,
+                        blobSize,
+                        copyPath,
+                        e.getStatusCode(),
+                        e.getErrorCode(),
+                        TimeValue.nsecToMSec(System.nanoTime() - copyStartNanos)
+                    );
                     boolean blobNotFound = BlobErrorCode.BLOB_NOT_FOUND.equals(e.getErrorCode());
                     boolean blobNotFoundWithSasToken = Strings.hasText(sasToken)
                         && BlobErrorCode.CANNOT_VERIFY_COPY_SOURCE.equals(e.getErrorCode())
@@ -922,6 +961,25 @@ public class AzureBlobStore implements BlobStore {
                 }
             }
         }
+    }
+
+    private static void stageBlockFromUrlTimed(
+        BlockBlobClient blockBlobClient,
+        String blockId,
+        String sourceUrl,
+        int partNum,
+        long offset,
+        long size
+    ) {
+        final long startNanos = System.nanoTime();
+        blockBlobClient.stageBlockFromUrl(blockId, sourceUrl, new BlobRange(offset, size));
+        logger.debug(
+            "[copy-bench] staged part [{}] offset [{}] size [{}] in [{}]ms",
+            partNum,
+            offset,
+            size,
+            TimeValue.nsecToMSec(System.nanoTime() - startNanos)
+        );
     }
 
     private static final Base64.Encoder base64Encoder = Base64.getEncoder().withoutPadding();
