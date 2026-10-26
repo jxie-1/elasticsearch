@@ -205,7 +205,8 @@ public class AzureRepository extends MeteredBlobStoreRepository {
          */
         static final Setting<ByteSizeValue> MAX_COPY_SIZE_BEFORE_MULTIPART_SETTING = Setting.byteSizeSetting(
             "max_copy_size_before_multipart",
-            ByteSizeValue.of(100, ByteSizeUnit.MB),
+            // BENCHMARK ONLY: hardcoded to 1 GB (was 100 MB) to measure the effect of a larger copy part size
+            ByteSizeValue.of(1, ByteSizeUnit.GB),
             ByteSizeValue.of(5, ByteSizeUnit.MB),
             ByteSizeValue.of(4000, ByteSizeUnit.MB),
             Property.NodeScope
