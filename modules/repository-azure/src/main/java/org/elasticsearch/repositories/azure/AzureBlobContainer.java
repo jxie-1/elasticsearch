@@ -23,6 +23,7 @@ import org.elasticsearch.common.blobstore.support.BlobMetadata;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.core.CheckedConsumer;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.core.TimeValue;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -152,11 +153,36 @@ public class AzureBlobContainer extends AbstractBlobContainer {
             throw new IllegalArgumentException("source blob container must be a AzureBlobContainer");
         }
         AzureBlobContainer azureSourceBlobContainer = (AzureBlobContainer) sourceBlobContainer;
-        blobStore.copyBlob(
+        final String sourceKey = azureSourceBlobContainer.buildKey(sourceBlobName);
+        final String destinationKey = buildKey(blobName);
+        final long startNanos = System.nanoTime();
+        try {
+            blobStore.copyBlob(purpose, sourceKey, azureSourceBlobContainer.blobStore, destinationKey);
+        } catch (IOException | RuntimeException e) {
+            logger.warn(
+                "[copy-bench] copy of [{}] to [{}] purpose [{}] size [{}] path [single-part] failed with [{}] after [{}]ms",
+                sourceKey,
+                destinationKey,
+                purpose,
+                blobSize,
+                e.getClass().getSimpleName(),
+                TimeValue.nsecToMSec(System.nanoTime() - startNanos)
+            );
+            throw e;
+        }
+        final var sourceStorageSettings = azureSourceBlobContainer.blobStore.getStorageSettingsForLogging();
+        logger.info(
+            "[copy-bench] copied [{}] to [{}] purpose [{}] size [{}] path [single-part] parts [1] partSize [{}] executor [{}] "
+                + "sasToken [{}] credentials {} in [{}]ms",
+            sourceKey,
+            destinationKey,
             purpose,
-            azureSourceBlobContainer.buildKey(sourceBlobName),
-            azureSourceBlobContainer.blobStore,
-            buildKey(blobName)
+            blobSize,
+            blobSize,
+            executor == null ? "none" : "present",
+            Strings.hasText(sourceStorageSettings.getSasToken()),
+            sourceStorageSettings.credentialsUsageFeatures(),
+            TimeValue.nsecToMSec(System.nanoTime() - startNanos)
         );
     }
 

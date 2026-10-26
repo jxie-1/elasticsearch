@@ -790,6 +790,11 @@ public class AzureBlobStore implements BlobStore {
         }
     }
 
+    // [copy-bench] only used to log which credentials a copy used
+    AzureStorageSettings getStorageSettingsForLogging() {
+        return getStorageSettings();
+    }
+
     private AzureStorageSettings getStorageSettings() {
         return service.getClientsManager().getClientSettings(projectId, clientName);
     }

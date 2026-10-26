@@ -1323,6 +1323,7 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
         assert ThreadPool.assertCurrentThreadPool(ThreadPool.Names.GENERIC);
         assert projectResolver.supportsMultipleProjects() == false || assertShardsAreInSameProject(source, destination);
 
+        final long copyShardStartNanos = System.nanoTime();
         var sourceShardContainer = getProjectBlobContainer(source);
         var blobContainersWithTerms = getContainersToSearch(sourceShardContainer, primaryTerm);
 
@@ -1337,6 +1338,7 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
             }
         }
 
+        final long copyStartNanos = System.nanoTime();
         final Executor executor = threadPool.executor(StatelessPlugin.BLOB_COPY_THREAD_POOL);
         ConcurrentMultipartHelper.runConcurrentTasks(tasks.size(), executor, i -> {
             var t = tasks.get(i);
@@ -1348,6 +1350,17 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
                 logger.warn("missing blob during copyShard, assuming benign race [{}]", t.blob().name());
             }
         });
+        logger.info(
+            "[copy-bench] copyShard [{}] -> [{}] copied [{}] blobs totalling [{}] bytes, largest [{}] bytes, "
+                + "listing took [{}]ms and copying took [{}]ms",
+            source,
+            destination,
+            tasks.size(),
+            tasks.stream().mapToLong(t -> t.blob().length()).sum(),
+            tasks.stream().mapToLong(t -> t.blob().length()).max().orElse(0L),
+            TimeValue.nsecToMSec(copyStartNanos - copyShardStartNanos),
+            TimeValue.nsecToMSec(System.nanoTime() - copyStartNanos)
+        );
     }
 
     /**
@@ -1365,6 +1378,7 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
         var destContainer = termContainer.apply(getProjectBlobContainer(destination));
         var blobName = virtualBcc.getBlobName();
         logger.debug("CopyCommit copying {} from [{}] to [{}]", blobName, sourceContainer.path(), destContainer.path());
+        final long copyCommitStartNanos = System.nanoTime();
         destContainer.copyBlob(
             OperationPurpose.RESHARDING,
             sourceContainer,
@@ -1372,6 +1386,14 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
             blobName,
             virtualBcc.getTotalSizeInBytes(),
             threadPool.executor(StatelessPlugin.BLOB_COPY_THREAD_POOL)
+        );
+        logger.info(
+            "[copy-bench] copyCommit [{}] -> [{}] blob [{}] of [{}] bytes took [{}]ms",
+            source,
+            destination,
+            blobName,
+            virtualBcc.getTotalSizeInBytes(),
+            TimeValue.nsecToMSec(System.nanoTime() - copyCommitStartNanos)
         );
     }
 
