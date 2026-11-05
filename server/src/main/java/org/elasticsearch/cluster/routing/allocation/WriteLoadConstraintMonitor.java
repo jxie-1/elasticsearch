@@ -99,9 +99,15 @@ public class WriteLoadConstraintMonitor {
         );
     }
 
+    /**
+     * Whether a node takes part in write-load hot-spot detection: the nodes that index, which are the stateless indexing nodes and, outside of
+     * stateless, the nodes holding hot data.
+     */
     public static boolean nodeIsHotspotEligible(DiscoveryNode node) {
         final var nodeRoles = node.getRoles();
-        return nodeRoles.contains(DiscoveryNodeRole.INDEX_ROLE);
+        return nodeRoles.contains(DiscoveryNodeRole.INDEX_ROLE)
+            || nodeRoles.contains(DiscoveryNodeRole.DATA_ROLE)
+            || nodeRoles.contains(DiscoveryNodeRole.DATA_HOT_NODE_ROLE);
     }
 
     /**
@@ -264,8 +270,7 @@ public class WriteLoadConstraintMonitor {
         final Map<NodeIdName, Long> hotspotNodeStartTimesView = hotspotNodeStartTimes;
 
         for (var node : state.nodes()) {
-            final var nodeRoles = node.getRoles();
-            if (nodeRoles.contains(DiscoveryNodeRole.INDEX_ROLE) == false) {
+            if (nodeIsHotspotEligible(node) == false) {
                 continue;
             }
             NodeIdName nodeIdName = NodeIdName.nodeIdName(node);

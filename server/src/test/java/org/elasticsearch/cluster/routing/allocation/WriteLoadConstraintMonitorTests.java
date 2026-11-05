@@ -18,6 +18,8 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.coordination.CoordinationMetadata;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodeRole;
+import org.elasticsearch.cluster.node.DiscoveryNodeUtils;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.routing.RerouteService;
 import org.elasticsearch.common.Priority;
@@ -63,6 +65,34 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 public class WriteLoadConstraintMonitorTests extends ESTestCase {
+    public void testNodesThatIndexAreEligibleForHotSpotDetection() {
+        for (var role : List.of(DiscoveryNodeRole.INDEX_ROLE, DiscoveryNodeRole.DATA_ROLE, DiscoveryNodeRole.DATA_HOT_NODE_ROLE)) {
+            assertTrue(role.roleName(), WriteLoadConstraintMonitor.nodeIsHotspotEligible(nodeWithRoles(role)));
+        }
+        // a node that has the role among others is still eligible
+        assertTrue(
+            WriteLoadConstraintMonitor.nodeIsHotspotEligible(
+                nodeWithRoles(DiscoveryNodeRole.MASTER_ROLE, DiscoveryNodeRole.DATA_HOT_NODE_ROLE)
+            )
+        );
+    }
+
+    public void testNodesThatDoNotIndexAreNotEligibleForHotSpotDetection() {
+        for (var role : List.of(
+            DiscoveryNodeRole.SEARCH_ROLE,
+            DiscoveryNodeRole.MASTER_ROLE,
+            DiscoveryNodeRole.DATA_COLD_NODE_ROLE,
+            DiscoveryNodeRole.DATA_FROZEN_NODE_ROLE,
+            DiscoveryNodeRole.INGEST_ROLE
+        )) {
+            assertFalse(role.roleName(), WriteLoadConstraintMonitor.nodeIsHotspotEligible(nodeWithRoles(role)));
+        }
+    }
+
+    private static DiscoveryNode nodeWithRoles(DiscoveryNodeRole... roles) {
+        return DiscoveryNodeUtils.builder(randomIdentifier()).roles(Set.of(roles)).build();
+    }
+
     public void testRerouteIsCalledWhenAHotSpotIsDetected() {
         final TestState testState = createRandomTestStateThatWillTriggerReroute();
         final WriteLoadConstraintMonitor writeLoadConstraintMonitor = new WriteLoadConstraintMonitor(
