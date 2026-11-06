@@ -41,8 +41,35 @@ class LicensedWriteLoadForecaster extends AbstractLicenseCheckingWriteLoadForeca
         Setting.Property.NodeScope,
         Setting.Property.Dynamic
     );
+
+    /**
+     * How the write load of the recent indices of a data stream is combined into the forecast for the next write index.
+     */
+    public enum Aggregation {
+        /**
+         * The average write load of the recent indices, each weighted by how long it lived. Long-lived, lightly loaded indices
+         * outweigh short-lived, heavily loaded ones, so a stream that is much busier during part of the day is forecast well below
+         * its busy load.
+         */
+        WEIGHTED_AVERAGE,
+        /**
+         * The highest peak write load seen in any of the recent indices. A busy period is not diluted by the quiet ones, at the
+         * price of over-forecasting after an unusually busy index.
+         */
+        MAX_PEAK
+    }
+
+    public static final Setting<Aggregation> AGGREGATION_SETTING = Setting.enumSetting(
+        Aggregation.class,
+        "write_load_forecaster.aggregation",
+        Aggregation.WEIGHTED_AVERAGE,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     private final ThreadPool threadPool;
     private volatile TimeValue maxIndexAge;
+    private volatile Aggregation aggregation;
 
     // hasValidLicense is a protected field in AbstractLicenseCheckingWriteLoadForecaster
 
@@ -52,19 +79,35 @@ class LicensedWriteLoadForecaster extends AbstractLicenseCheckingWriteLoadForeca
         Settings settings,
         ClusterSettings clusterSettings
     ) {
-        this(hasValidLicenseSupplier, threadPool, MAX_INDEX_AGE_SETTING.get(settings));
+        this(hasValidLicenseSupplier, threadPool, MAX_INDEX_AGE_SETTING.get(settings), AGGREGATION_SETTING.get(settings));
         clusterSettings.addSettingsUpdateConsumer(MAX_INDEX_AGE_SETTING, this::setMaxIndexAgeSetting);
+        clusterSettings.addSettingsUpdateConsumer(AGGREGATION_SETTING, this::setAggregationSetting);
     }
 
     // exposed for tests only
     LicensedWriteLoadForecaster(BooleanSupplier hasValidLicenseSupplier, ThreadPool threadPool, TimeValue maxIndexAge) {
+        this(hasValidLicenseSupplier, threadPool, maxIndexAge, Aggregation.WEIGHTED_AVERAGE);
+    }
+
+    // exposed for tests only
+    LicensedWriteLoadForecaster(
+        BooleanSupplier hasValidLicenseSupplier,
+        ThreadPool threadPool,
+        TimeValue maxIndexAge,
+        Aggregation aggregation
+    ) {
         super(hasValidLicenseSupplier);
         this.threadPool = threadPool;
         this.maxIndexAge = maxIndexAge;
+        this.aggregation = aggregation;
     }
 
     private void setMaxIndexAgeSetting(TimeValue updatedMaxIndexAge) {
         this.maxIndexAge = updatedMaxIndexAge;
+    }
+
+    private void setAggregationSetting(Aggregation updatedAggregation) {
+        this.aggregation = updatedAggregation;
     }
 
     @Override
@@ -96,7 +139,7 @@ class LicensedWriteLoadForecaster extends AbstractLicenseCheckingWriteLoadForeca
             .filter(Objects::nonNull)
             .toList();
 
-        OptionalDouble forecastIndexWriteLoad = forecastIndexWriteLoad(indicesWriteLoadWithinMaxAgeRange);
+        OptionalDouble forecastIndexWriteLoad = forecastIndexWriteLoad(indicesWriteLoadWithinMaxAgeRange, aggregation);
 
         if (forecastIndexWriteLoad.isEmpty()) {
             return metadata;
@@ -138,6 +181,53 @@ class LicensedWriteLoadForecaster extends AbstractLicenseCheckingWriteLoadForeca
      */
     // Visible for testing
     static OptionalDouble forecastIndexWriteLoad(List<IndexWriteLoad> indicesWriteLoadWithinMaxAgeRange) {
+        return forecastIndexWriteLoad(indicesWriteLoadWithinMaxAgeRange, Aggregation.WEIGHTED_AVERAGE);
+    }
+
+    /**
+     * This calculates the total write-load to forecast for the next index, from the write load of all recent indices.
+     *
+     * @param indicesWriteLoadWithinMaxAgeRange The indices considered "recent"
+     * @param aggregation How the recent indices are combined
+     * @return The total write-load. To get the per-shard write load, this number must be divided by the number of shards
+     */
+    // Visible for testing
+    static OptionalDouble forecastIndexWriteLoad(List<IndexWriteLoad> indicesWriteLoadWithinMaxAgeRange, Aggregation aggregation) {
+        return switch (aggregation) {
+            case WEIGHTED_AVERAGE -> weightedAverageIndexWriteLoad(indicesWriteLoadWithinMaxAgeRange);
+            case MAX_PEAK -> maxPeakIndexWriteLoad(indicesWriteLoadWithinMaxAgeRange);
+        };
+    }
+
+    /**
+     * The highest total peak write-load of any of the indices. The peak of an index is the sum of the peaks of its shards: shards with no
+     * peak recorded are assumed to have the average peak of the others, as for the weighted average, and indices without any are ignored.
+     */
+    private static OptionalDouble maxPeakIndexWriteLoad(List<IndexWriteLoad> indicesWriteLoadWithinMaxAgeRange) {
+        double maxIndexPeakWriteLoad = 0;
+        boolean anyPeakWriteLoad = false;
+        for (IndexWriteLoad writeLoad : indicesWriteLoadWithinMaxAgeRange) {
+            double totalShardPeakWriteLoad = 0;
+            int shardsWithPeakWriteLoad = 0;
+            for (int shardId = 0; shardId < writeLoad.numberOfShards(); shardId++) {
+                final OptionalDouble peakWriteLoadForShard = writeLoad.getPeakWriteLoadForShard(shardId);
+                if (peakWriteLoadForShard.isPresent()) {
+                    totalShardPeakWriteLoad += peakWriteLoadForShard.getAsDouble();
+                    shardsWithPeakWriteLoad++;
+                }
+            }
+            if (shardsWithPeakWriteLoad == 0) {
+                continue;
+            }
+            final double totalIndexPeakWriteLoad = totalShardPeakWriteLoad / shardsWithPeakWriteLoad * writeLoad.numberOfShards();
+            assert Double.isFinite(totalIndexPeakWriteLoad) : "Invalid total index peak write load: " + totalIndexPeakWriteLoad;
+            maxIndexPeakWriteLoad = Math.max(maxIndexPeakWriteLoad, totalIndexPeakWriteLoad);
+            anyPeakWriteLoad = true;
+        }
+        return anyPeakWriteLoad ? OptionalDouble.of(maxIndexPeakWriteLoad) : OptionalDouble.empty();
+    }
+
+    private static OptionalDouble weightedAverageIndexWriteLoad(List<IndexWriteLoad> indicesWriteLoadWithinMaxAgeRange) {
         double allIndicesWriteLoad = 0;
         long allIndicesUptime = 0;
         for (IndexWriteLoad writeLoad : indicesWriteLoadWithinMaxAgeRange) {

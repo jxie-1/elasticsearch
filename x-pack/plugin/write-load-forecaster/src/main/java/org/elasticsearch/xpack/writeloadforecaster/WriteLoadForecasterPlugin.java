@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.OptionalDouble;
 import java.util.function.BooleanSupplier;
 
+import static org.elasticsearch.xpack.writeloadforecaster.LicensedWriteLoadForecaster.AGGREGATION_SETTING;
 import static org.elasticsearch.xpack.writeloadforecaster.LicensedWriteLoadForecaster.MAX_INDEX_AGE_SETTING;
 
 public class WriteLoadForecasterPlugin extends Plugin implements ClusterPlugin {
@@ -54,7 +55,7 @@ public class WriteLoadForecasterPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public List<Setting<?>> getSettings() {
-        return List.of(MAX_INDEX_AGE_SETTING, OVERRIDE_WRITE_LOAD_FORECAST_SETTING);
+        return List.of(MAX_INDEX_AGE_SETTING, AGGREGATION_SETTING, OVERRIDE_WRITE_LOAD_FORECAST_SETTING);
     }
 
     @Override

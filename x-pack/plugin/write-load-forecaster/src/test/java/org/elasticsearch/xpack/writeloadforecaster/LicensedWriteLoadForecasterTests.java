@@ -25,6 +25,7 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.MockLog;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.xpack.writeloadforecaster.LicensedWriteLoadForecaster.Aggregation;
 import org.hamcrest.Matcher;
 import org.junit.After;
 import org.junit.Before;
@@ -297,6 +298,128 @@ public class LicensedWriteLoadForecasterTests extends ESTestCase {
             assertThat(writeLoadForecast.isPresent(), is(true));
             assertThat(writeLoadForecast.getAsDouble(), is(closeTo(31.66, 0.01)));
         }
+    }
+
+    public void testMaxPeakWriteLoadForecast() {
+        {
+            assertThat(forecastIndexWriteLoad(List.of(), Aggregation.MAX_PEAK).isEmpty(), is(true));
+            assertThat(forecastIndexWriteLoad(List.of(IndexWriteLoad.builder(5).build()), Aggregation.MAX_PEAK).isEmpty(), is(true));
+        }
+
+        {
+            // The peak of an index is the sum of the peaks of its shards
+            OptionalDouble writeLoadForecast = forecastIndexWriteLoad(
+                List.of(
+                    IndexWriteLoad.builder(3)
+                        .withShardWriteLoad(0, 1, 999, 1, 10)
+                        .withShardWriteLoad(1, 1, 999, 2, 10)
+                        .withShardWriteLoad(2, 1, 999, 3, 10)
+                        .build()
+                ),
+                Aggregation.MAX_PEAK
+            );
+            assertThat(writeLoadForecast.isPresent(), is(true));
+            assertThat(writeLoadForecast.getAsDouble(), is(equalTo(6.0)));
+        }
+
+        {
+            // The highest peak wins, whatever the uptime and the position of the index
+            OptionalDouble writeLoadForecast = forecastIndexWriteLoad(
+                List.of(
+                    IndexWriteLoad.builder(1).withShardWriteLoad(0, 1, 999, 2, 1000).build(),
+                    IndexWriteLoad.builder(2).withShardWriteLoad(0, 1, 999, 5, 1).withShardWriteLoad(1, 1, 999, 3, 1).build(),
+                    IndexWriteLoad.builder(1).withShardWriteLoad(0, 1, 999, 4, 1000).build()
+                ),
+                Aggregation.MAX_PEAK
+            );
+            assertThat(writeLoadForecast.getAsDouble(), is(equalTo(8.0)));
+        }
+
+        {
+            // Shards without a peak are assumed to have the average peak of the other shards of the index
+            OptionalDouble writeLoadForecast = forecastIndexWriteLoad(
+                List.of(IndexWriteLoad.builder(4).withShardWriteLoad(0, 1, 999, 2, 10).withShardWriteLoad(1, 1, 999, 4, 10).build()),
+                Aggregation.MAX_PEAK
+            );
+            assertThat(writeLoadForecast.getAsDouble(), is(equalTo(12.0)));
+        }
+    }
+
+    public void testMaxPeakIsNotDilutedByLongLivedLightIndices() {
+        // A quiet index, a busy one that lived a third as long, and another quiet one, as for a stream that is busy only some of the time
+        final List<IndexWriteLoad> indices = List.of(
+            IndexWriteLoad.builder(2).withShardWriteLoad(0, 0.1, 999, 0.3, 5400).withShardWriteLoad(1, 0.1, 999, 0.3, 5400).build(),
+            IndexWriteLoad.builder(2).withShardWriteLoad(0, 1.5, 999, 2.0, 1800).withShardWriteLoad(1, 1.5, 999, 2.0, 1800).build(),
+            IndexWriteLoad.builder(2).withShardWriteLoad(0, 0.1, 999, 0.3, 5400).withShardWriteLoad(1, 0.1, 999, 0.3, 5400).build()
+        );
+
+        // the weighted average is dominated by the long-lived quiet indices, far below the load of the busy index (3.0 in total)
+        assertThat(forecastIndexWriteLoad(indices, Aggregation.WEIGHTED_AVERAGE).getAsDouble(), is(closeTo(0.6, 0.001)));
+        // the default is the weighted average
+        assertThat(forecastIndexWriteLoad(indices).getAsDouble(), is(closeTo(0.6, 0.001)));
+        // the maximum peak is the peak of the busy index
+        assertThat(forecastIndexWriteLoad(indices, Aggregation.MAX_PEAK).getAsDouble(), is(equalTo(4.0)));
+    }
+
+    public void testMaxPeakAggregationIsUsedForTheWriteIndexForecast() {
+        final TimeValue maxIndexAge = TimeValue.timeValueDays(7);
+        final String dataStreamName = "logs-es";
+        final int numberOfShards = 2;
+        final long now = System.currentTimeMillis();
+        final var metadataBuilder = ProjectMetadata.builder(randomProjectIdOrDefault());
+        final List<Index> backingIndices = new ArrayList<>();
+        final List<IndexWriteLoad> writeLoads = List.of(
+            IndexWriteLoad.builder(numberOfShards)
+                .withShardWriteLoad(0, 0.1, 999, 0.3, 5400)
+                .withShardWriteLoad(1, 0.1, 999, 0.3, 5400)
+                .build(),
+            IndexWriteLoad.builder(numberOfShards)
+                .withShardWriteLoad(0, 1.5, 999, 2.0, 1800)
+                .withShardWriteLoad(1, 1.5, 999, 2.0, 1800)
+                .build(),
+            IndexWriteLoad.builder(numberOfShards)
+                .withShardWriteLoad(0, 0.1, 999, 0.3, 5400)
+                .withShardWriteLoad(1, 0.1, 999, 0.3, 5400)
+                .build()
+        );
+        for (int i = 0; i < writeLoads.size(); i++) {
+            final IndexMetadata indexMetadata = createIndexMetadata(
+                DataStream.getDefaultBackingIndexName(dataStreamName, i),
+                numberOfShards,
+                writeLoads.get(i),
+                now - (maxIndexAge.millis() * (4 - i) / 5)
+            );
+            backingIndices.add(indexMetadata.getIndex());
+            metadataBuilder.put(indexMetadata, false);
+        }
+        final IndexMetadata writeIndexMetadata = createIndexMetadata(
+            DataStream.getDefaultBackingIndexName(dataStreamName, writeLoads.size()),
+            numberOfShards,
+            null,
+            now
+        );
+        backingIndices.add(writeIndexMetadata.getIndex());
+        metadataBuilder.put(writeIndexMetadata, false);
+        final DataStream dataStream = createDataStream(dataStreamName, backingIndices);
+        metadataBuilder.put(dataStream);
+
+        final WriteLoadForecaster maxPeakForecaster = new LicensedWriteLoadForecaster(
+            () -> true,
+            threadPool,
+            maxIndexAge,
+            Aggregation.MAX_PEAK
+        );
+        maxPeakForecaster.refreshLicense();
+        final IndexMetadata maxPeakWriteIndex = maxPeakForecaster.withWriteLoadForecastForWriteIndex(dataStreamName, metadataBuilder)
+            .getSafe(dataStream.getWriteIndex());
+        // the busy index peaked at 2.0 on each of its 2 shards, and the forecast is per shard
+        assertThat(maxPeakForecaster.getForecastedWriteLoad(maxPeakWriteIndex).getAsDouble(), is(equalTo(2.0)));
+
+        final WriteLoadForecaster averageForecaster = new LicensedWriteLoadForecaster(() -> true, threadPool, maxIndexAge);
+        averageForecaster.refreshLicense();
+        final IndexMetadata averageWriteIndex = averageForecaster.withWriteLoadForecastForWriteIndex(dataStreamName, metadataBuilder)
+            .getSafe(dataStream.getWriteIndex());
+        assertThat(averageForecaster.getForecastedWriteLoad(averageWriteIndex).getAsDouble(), is(closeTo(0.3, 0.001)));
     }
 
     private IndexWriteLoad randomIndexWriteLoad(int numberOfShards) {
